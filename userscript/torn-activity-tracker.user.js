@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene/torn-activity-tracker
-// @version      1.1.0
+// @version      1.2.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       eugene
 // @match        https://www.torn.com/*
@@ -23,7 +23,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.1.0";
+    const VERSION = "1.2.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle" };
 
@@ -1484,6 +1484,9 @@
                 }).join("")}
             </div>
 
+            <h3 style="color:#fff;font-size:15px;margin:16px 0 8px">Registered Users</h3>
+            <div id="tat-admin-users" class="tat-status">Loading...</div>
+
             <h3 style="color:#fff;font-size:15px;margin:16px 0 8px">Active Poll Jobs (top 50)</h3>
             <div id="tat-admin-jobs" class="tat-status">Loading...</div>
 
@@ -1502,6 +1505,7 @@
             <div id="tat-admin-logs" class="tat-status">Loading...</div>
         `;
 
+        loadAdminUsers();
         loadAdminJobs();
         loadAdminLogs();
 
@@ -1550,6 +1554,51 @@
             <div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.5px">${title}</div>
             <div style="font-size:14px;margin-top:4px;color:#ccc">${content}</div>
         </div>`;
+    }
+
+    async function loadAdminUsers() {
+        const container = document.getElementById("tat-admin-users");
+        if (!container) return;
+        try {
+            const users = await backendRequest("GET", "/v1/admin/users");
+            if (users.length === 0) {
+                container.innerHTML = `<span style="color:#666">No registered users.</span>`;
+                return;
+            }
+            const fmtTs = (ts) => {
+                if (!ts) return "—";
+                const d = new Date(ts);
+                return `${d.toISOString().slice(0, 10)} ${d.toISOString().slice(11, 16)}`;
+            };
+            let html = `<table class="tat-grid" style="font-size:12px">
+                <thead><tr>
+                    <th style="text-align:left">Name</th>
+                    <th>ID</th>
+                    <th>Faction</th>
+                    <th>Key</th>
+                    <th>Registered (UTC)</th>
+                    <th>Last Seen (UTC)</th>
+                </tr></thead><tbody>`;
+            for (const u of users) {
+                const keyColor = u.key_status === "active" ? "#4caf50" : "#ef5350";
+                const profileUrl = `https://www.torn.com/profiles.php?XID=${u.torn_user_id}`;
+                const factionCell = u.faction_id
+                    ? `<a href="https://www.torn.com/factions.php?step=profile&ID=${u.faction_id}" target="_blank" style="color:#8ecae6;text-decoration:none">${u.faction_id}</a>`
+                    : "—";
+                html += `<tr>
+                    <td style="text-align:left"><a href="${profileUrl}" target="_blank" style="color:#8ecae6;text-decoration:none">${u.name || "?"}</a></td>
+                    <td>${u.torn_user_id}</td>
+                    <td>${factionCell}</td>
+                    <td style="color:${keyColor};font-weight:600">${u.key_status}</td>
+                    <td style="color:#888">${fmtTs(u.registered_at)}</td>
+                    <td style="color:#888">${fmtTs(u.last_seen_at)}</td>
+                </tr>`;
+            }
+            html += `</tbody></table>`;
+            container.innerHTML = html;
+        } catch {
+            container.innerHTML = `<span style="color:#ef5350">Failed to load users.</span>`;
+        }
     }
 
     async function loadAdminJobs() {
