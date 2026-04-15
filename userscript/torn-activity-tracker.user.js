@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.0.0
+// @version      2.1.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.0.0";
+    const VERSION = "2.1.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle" };
 
@@ -684,7 +684,11 @@
     }
 
     let lastSummaryData = null;
+    let lastSummaryDataOpp = null;
     let lastSummaryFaction = null;
+    let lastSummaryFactionOpp = null;
+    let lastSummaryFactionLabel = null;
+    let lastSummaryFactionOppLabel = null;
     let lastSummaryDays = null;
 
     async function renderWeekdayAvg(el) {
@@ -698,9 +702,13 @@
         const includeIdleInit = GM_getValue(STORAGE_KEYS.summaryIncludeIdle, false) ? "checked" : "";
         el.innerHTML = `
             <div class="tat-grid-controls">
-                <label>Faction:</label>
+                <label>My faction:</label>
                 <select id="tat-summary-faction">
                     <option value="${factionId}">My faction (${factionId})</option>
+                </select>
+                <label style="font-weight:700;color:#666">vs</label>
+                <select id="tat-summary-faction-opp">
+                    <option value="">(none)</option>
                 </select>
                 <label>Days:</label>
                 <select id="tat-summary-days">
@@ -720,54 +728,84 @@
         try {
             const watchlist = await backendRequest("GET", "/v1/watchlist");
             const sel = document.getElementById("tat-summary-faction");
+            const selOpp = document.getElementById("tat-summary-faction-opp");
             for (const f of watchlist) {
-                const opt = document.createElement("option");
-                opt.value = f.faction_id;
-                opt.textContent = `${f.name || "Faction"} (${f.faction_id})`;
-                sel.appendChild(opt);
+                const tag = f.source === "war" ? "[WAR] " : "";
+                const label = `${tag}${f.name || "Faction"} (${f.faction_id})`;
+                const optA = document.createElement("option");
+                optA.value = f.faction_id;
+                optA.textContent = label;
+                sel.appendChild(optA);
+                const optB = document.createElement("option");
+                optB.value = f.faction_id;
+                optB.textContent = label;
+                selOpp.appendChild(optB);
             }
         } catch { /* ignore */ }
 
+        const labelOf = (selectEl) => {
+            const opt = selectEl.options[selectEl.selectedIndex];
+            return opt ? opt.textContent : "";
+        };
+
         const load = () => {
-            const f = Number(document.getElementById("tat-summary-faction").value);
+            const factionSel = document.getElementById("tat-summary-faction");
+            const oppSel = document.getElementById("tat-summary-faction-opp");
+            const f = Number(factionSel.value);
+            const opp = oppSel.value ? Number(oppSel.value) : null;
             const d = Number(document.getElementById("tat-summary-days").value);
-            fetchAndRenderSummary(f, d);
+            fetchAndRenderSummary(f, opp, d, labelOf(factionSel), opp ? labelOf(oppSel) : null);
         };
 
         document.getElementById("tat-summary-faction").addEventListener("change", load);
+        document.getElementById("tat-summary-faction-opp").addEventListener("change", load);
         document.getElementById("tat-summary-days").addEventListener("change", load);
         document.getElementById("tat-summary-include-idle").addEventListener("change", (e) => {
             GM_setValue(STORAGE_KEYS.summaryIncludeIdle, e.target.checked);
-            if (lastSummaryData) renderWeekdaySummary(lastSummaryData, lastSummaryDays);
+            if (lastSummaryData) renderWeekdaySummary();
         });
         document.getElementById("tat-export-summary").addEventListener("click", () => {
             if (!lastSummaryData || lastSummaryData.length === 0) return;
-            const headers = ["hour_of_day_utc", "avg_pct_online", "avg_pct_online_or_idle", "days_sampled", "total_observations"];
-            const rows = lastSummaryData.map((r) => [
-                r.hour_of_day,
-                r.avg_pct_online,
-                r.avg_pct_online_or_idle ?? "",
-                r.days_sampled,
-                r.total_observations,
-            ]);
-            downloadCSV(`activity-summary-${lastSummaryFaction}.csv`, headers, rows);
+            const headers = ["faction", "hour_of_day_utc", "avg_pct_online", "avg_pct_online_or_idle", "days_sampled", "total_observations"];
+            const rows = [];
+            for (const r of lastSummaryData) {
+                rows.push([lastSummaryFaction, r.hour_of_day, r.avg_pct_online, r.avg_pct_online_or_idle ?? "", r.days_sampled, r.total_observations]);
+            }
+            if (lastSummaryDataOpp) {
+                for (const r of lastSummaryDataOpp) {
+                    rows.push([lastSummaryFactionOpp, r.hour_of_day, r.avg_pct_online, r.avg_pct_online_or_idle ?? "", r.days_sampled, r.total_observations]);
+                }
+            }
+            const suffix = lastSummaryFactionOpp ? `-vs-${lastSummaryFactionOpp}` : "";
+            downloadCSV(`activity-summary-${lastSummaryFaction}${suffix}.csv`, headers, rows);
         });
         load();
     }
 
-    async function fetchAndRenderSummary(factionId, days) {
+    async function fetchAndRenderSummary(factionId, oppId, days, factionLabel, oppLabel) {
         const container = document.getElementById("tat-summary-container");
         const exportBtn = document.getElementById("tat-export-summary");
         if (!container) return;
         container.innerHTML = `Loading...`;
         if (exportBtn) exportBtn.disabled = true;
         lastSummaryData = null;
+        lastSummaryDataOpp = null;
         lastSummaryFaction = factionId;
+        lastSummaryFactionOpp = oppId;
+        lastSummaryFactionLabel = factionLabel;
+        lastSummaryFactionOppLabel = oppLabel;
         lastSummaryDays = days;
 
-        let data;
+        let data, oppData = null;
         try {
-            data = await backendRequest("GET", `/v1/activity/summary?faction=${factionId}&days=${days}`);
+            if (oppId) {
+                [data, oppData] = await Promise.all([
+                    backendRequest("GET", `/v1/activity/summary?faction=${factionId}&days=${days}`),
+                    backendRequest("GET", `/v1/activity/summary?faction=${oppId}&days=${days}`),
+                ]);
+            } else {
+                data = await backendRequest("GET", `/v1/activity/summary?faction=${factionId}&days=${days}`);
+            }
         } catch (err) {
             container.innerHTML = `<span style="color:#ef5350">Failed to load: ${err.error || err.status}</span>`;
             return;
@@ -779,16 +817,23 @@
         }
 
         lastSummaryData = data;
+        lastSummaryDataOpp = oppData && oppData.length ? oppData : null;
         if (exportBtn) exportBtn.disabled = false;
-        renderWeekdaySummary(data, days);
+        renderWeekdaySummary();
     }
 
-    function renderWeekdaySummary(data, days) {
+    function renderWeekdaySummary() {
         const container = document.getElementById("tat-summary-container");
         if (!container) return;
+        const data = lastSummaryData;
+        const oppData = lastSummaryDataOpp;
+        const days = lastSummaryDays;
+        if (!data) return;
+
         const includeIdleRequested = !!document.getElementById("tat-summary-include-idle")?.checked;
         // Graceful fallback: old backends don't return avg_pct_online_or_idle.
-        const hasIdleField = data.some((r) => typeof r.avg_pct_online_or_idle === "number");
+        const combined = oppData ? [...data, ...oppData] : data;
+        const hasIdleField = combined.some((r) => typeof r.avg_pct_online_or_idle === "number");
         const includeIdle = includeIdleRequested && hasIdleField;
         const pctOf = (row) => {
             if (!row) return 0;
@@ -796,25 +841,38 @@
         };
         const labelSuffix = includeIdle ? "online + idle" : "online";
 
-        // Render a simple bar chart using divs
-        const maxPct = Math.max(...data.map((r) => pctOf(r)), 1);
-        let html = `<div style="display:flex;align-items:flex-end;gap:2px;height:180px;margin:16px 0;padding-bottom:24px;position:relative">`;
-        for (let h = 0; h < 24; h++) {
-            const row = data.find((r) => r.hour_of_day === h);
-            const pct = pctOf(row);
-            const barH = Math.max((pct / maxPct) * 150, 2);
-            const bg = heatColor(pct);
-            html += `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
-                <div style="font-size:10px;color:#aaa;margin-bottom:2px">${pct}%</div>
-                <div style="width:100%;height:${barH}px;background:${bg};border-radius:2px 2px 0 0" title="${String(h).padStart(2,'0')}:00 — ${pct}% avg ${labelSuffix}"></div>
-                <div style="font-size:10px;color:#666;margin-top:4px;position:absolute;bottom:0">${String(h).padStart(2,'0')}</div>
-            </div>`;
+        // Shared Y-axis scale across both charts so they're directly comparable.
+        const maxPct = Math.max(...combined.map((r) => pctOf(r)), 1);
+
+        const chartHTML = (dataset, title, titleColor) => {
+            let out = `<div style="color:${titleColor};font-size:12px;font-weight:700;margin-top:12px;margin-bottom:4px">${title}</div>`;
+            out += `<div style="display:flex;align-items:flex-end;gap:2px;height:180px;margin:0;padding-bottom:24px;position:relative">`;
+            for (let h = 0; h < 24; h++) {
+                const row = dataset.find((r) => r.hour_of_day === h);
+                const pct = pctOf(row);
+                const barH = Math.max((pct / maxPct) * 150, 2);
+                const bg = heatColor(pct);
+                out += `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
+                    <div style="font-size:10px;color:#aaa;margin-bottom:2px">${pct}%</div>
+                    <div style="width:100%;height:${barH}px;background:${bg};border-radius:2px 2px 0 0" title="${String(h).padStart(2,'0')}:00 — ${pct}% avg ${labelSuffix}"></div>
+                    <div style="font-size:10px;color:#666;margin-top:4px;position:absolute;bottom:0">${String(h).padStart(2,'0')}</div>
+                </div>`;
+            }
+            out += `</div>`;
+            return out;
+        };
+
+        const myTitle = lastSummaryFactionLabel || `Faction ${lastSummaryFaction}`;
+        let html = chartHTML(data, myTitle, "#4fc3f7");
+        if (oppData) {
+            const oppTitle = lastSummaryFactionOppLabel || `Faction ${lastSummaryFactionOpp}`;
+            html += chartHTML(oppData, oppTitle, "#ef5350");
         }
-        html += `</div>`;
+
         const stale = includeIdleRequested && !hasIdleField
             ? ` <span style="color:#cc3333">(backend hasn't been updated yet — showing online only)</span>`
             : "";
-        html += `<div style="color:#666;font-size:12px;text-align:center">Hour of day (TCT/UTC) — average % ${labelSuffix} over ${days} days${stale}</div>`;
+        html += `<div style="color:#666;font-size:12px;text-align:center;margin-top:4px">Hour of day (TCT/UTC) — average % ${labelSuffix} over ${days} days${stale}</div>`;
         container.innerHTML = html;
     }
 
