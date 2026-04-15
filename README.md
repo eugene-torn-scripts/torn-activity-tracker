@@ -100,7 +100,7 @@ If two snapshots fall within the same UTC hour, the **max** of each metric is ta
 **Stack**:
 - Backend: Node.js + Fastify
 - Database: Oracle Autonomous Database (Always Free tier, 20 GB)
-- Hosting: Oracle Cloud Always Free — VM.Standard.A1.Flex (4 OCPU / 24 GB RAM ARM Ampere)
+- Hosting: Oracle Cloud Always Free — VM.Standard.E2.1.Micro (1/8 OCPU burstable to 1, 1 GB RAM, AMD EPYC x86_64)
 - TLS: Let's Encrypt via DuckDNS subdomain
 - Userscript manager: Tampermonkey (Violentmonkey/Greasemonkey should also work)
 
@@ -209,7 +209,7 @@ Phased delivery — each phase ends with something demonstrable.
 - **Single-user scope**: ~50–300 candidate factions × 48 polls/day = ~2,400–14,400 calls/day → fits comfortably in one key.
 - **Multi-user**: cross-key dedup means N users with overlapping watchlists make far fewer than N × 14,400 calls.
 - **Storage**: ~10 bytes per `activity_snapshots` row × ~5,000 active factions × ~80 members × 720 hours/month ≈ 3 GB peak (well under the 20 GB Oracle free tier).
-- **Compute**: Fastify on 1 OCPU is overkill for this load; the A1 ARM instance has 3 OCPU left over.
+- **Compute**: Fastify on 1/8 OCPU is modest but workable — the Node process sits around 40–80 MB RAM and near-zero CPU at steady state; the E2.1.Micro bursts to 1 full OCPU under load.
 
 ---
 
