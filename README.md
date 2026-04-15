@@ -215,4 +215,8 @@ Phased delivery — each phase ends with something demonstrable.
 
 ## License
 
-TBD. Personal/private project for now.
+GNU General Public License v3.0 or later — see [`LICENSE`](LICENSE).
+
+In short: you're free to use, modify, and redistribute, but any derivative work must also be GPL-3.0 with source published. Attribution to `lannav` must be retained.
+
+(Versions ≤ 1.2.0 were released under MIT and remain MIT for those releases.)

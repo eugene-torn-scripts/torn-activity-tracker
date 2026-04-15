@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
-// @namespace    https://github.com/eugene/torn-activity-tracker
-// @version      1.2.0
+// @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
+// @version      2.0.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
-// @author       eugene
+// @author       lannav
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -12,18 +12,35 @@
 // @connect      torn-tat.duckdns.org
 // @connect      ffscouter.com
 // @connect      *
-// @license      MIT
+// @license      GPL-3.0-or-later
 // @downloadURL  https://update.greasyfork.org/scripts/573936/Torn%20Activity%20Tracker.user.js
 // @updateURL    https://update.greasyfork.org/scripts/573936/Torn%20Activity%20Tracker.meta.js
 // @run-at       document-end
 // ==/UserScript==
+
+/*
+ * Torn Activity Tracker
+ * Copyright (C) 2026 lannav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details: https://www.gnu.org/licenses/gpl-3.0.html
+ *
+ * Source: https://github.com/eugene-torn-scripts/torn-activity-tracker
+ */
 
 /* eslint-disable no-undef */
 
 (function () {
     "use strict";
 
-    const VERSION = "1.2.0";
+    const VERSION = "2.0.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle" };
 
