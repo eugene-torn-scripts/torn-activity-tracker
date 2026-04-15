@@ -1,0 +1,39 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+.npm
+*.log
+
+# Env / secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Sensitive text files (API keys, specs, examples)
+*Key.txt
+*Api.txt
+apiKey.txt
+tornApi.txt
+ffscouter*.txt
+logsExample.txt
+
+# Oracle wallet
+wallet/
+oracle-wallet/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Build / cache
+dist/
+build/
+.cache/
