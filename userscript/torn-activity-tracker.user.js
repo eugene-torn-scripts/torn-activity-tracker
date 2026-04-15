@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene/torn-activity-tracker
-// @version      1.0.2
+// @version      1.1.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       eugene
 // @match        https://www.torn.com/*
@@ -23,9 +23,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.0.2";
+    const VERSION = "1.1.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -498,6 +498,7 @@
             return;
         }
 
+        const includeIdleInit = GM_getValue(STORAGE_KEYS.hourGridIncludeIdle, false) ? "checked" : "";
         el.innerHTML = `
             <div class="tat-grid-controls">
                 <label>Faction:</label>
@@ -511,6 +512,10 @@
                     <option value="14">14</option>
                     <option value="30">30</option>
                 </select>
+                <label style="margin-left:8px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" title="Include idle members in the heatmap percentage">
+                    <input type="checkbox" id="tat-grid-include-idle" ${includeIdleInit}>
+                    Include idle
+                </label>
             </div>
             <div class="tat-legend">
                 <span>Activity:</span>
@@ -545,17 +550,24 @@
 
         document.getElementById("tat-grid-faction").addEventListener("change", loadGrid);
         document.getElementById("tat-grid-days").addEventListener("change", loadGrid);
+        document.getElementById("tat-grid-include-idle").addEventListener("change", (e) => {
+            GM_setValue(STORAGE_KEYS.hourGridIncludeIdle, e.target.checked);
+            if (lastHourlyData) renderHourlyGrid(lastHourlyData);
+        });
         document.getElementById("tat-export-hourly").addEventListener("click", () => {
             if (!lastHourlyData || lastHourlyData.length === 0) return;
-            const headers = ["date_utc", "hour_utc", "total_members", "online", "idle", "offline", "pct_online"];
+            const headers = ["date_utc", "hour_utc", "total_members", "online", "idle", "offline", "pct_online", "pct_online_or_idle"];
             const rows = lastHourlyData.map((r) => {
                 const d = new Date(r.hour);
+                const total = r.total_members;
+                const pctOnlineOrIdle = total > 0 ? Math.round(((r.online + r.idle) / total) * 100) : 0;
                 return [
                     d.toISOString().slice(0, 10),
                     d.getUTCHours(),
-                    r.total_members, r.online, r.idle,
-                    r.total_members - r.online - r.idle,
+                    total, r.online, r.idle,
+                    total - r.online - r.idle,
                     r.pct_online,
+                    pctOnlineOrIdle,
                 ];
             });
             downloadCSV(`activity-hourly-${lastHourlyFaction}.csv`, headers, rows);
@@ -587,8 +599,15 @@
 
         lastHourlyData = data;
         if (exportBtn) exportBtn.disabled = false;
+        renderHourlyGrid(data);
+    }
 
-        // Group data by date (YYYY-MM-DD) → hour (0-23) → pct_online
+    function renderHourlyGrid(data) {
+        const container = document.getElementById("tat-grid-container");
+        if (!container) return;
+        const includeIdle = !!document.getElementById("tat-grid-include-idle")?.checked;
+
+        // Group data by date (YYYY-MM-DD) → hour (0-23)
         const byDay = new Map();
         for (const row of data) {
             const d = new Date(row.hour);
@@ -617,10 +636,15 @@
                 if (!row) {
                     html += `<td class="tat-cell" style="background:#111;color:#444">-</td>`;
                 } else {
-                    const pct = row.pct_online;
+                    const total = row.total_members;
+                    const pct = includeIdle
+                        ? (total > 0 ? Math.round(((row.online + row.idle) / total) * 100) : 0)
+                        : row.pct_online;
                     const bg = heatColor(pct);
                     const textColor = pct > 50 ? "#111" : "#ddd";
-                    const title = `${pct}% online (${row.online}/${row.total_members})`;
+                    const title = includeIdle
+                        ? `${pct}% online+idle (${row.online} online + ${row.idle} idle / ${total})`
+                        : `${pct}% online (${row.online}/${total})`;
                     html += `<td class="tat-cell" style="background:${bg};color:${textColor}" title="${title}">${pct}</td>`;
                 }
             }
@@ -644,6 +668,7 @@
 
     let lastSummaryData = null;
     let lastSummaryFaction = null;
+    let lastSummaryDays = null;
 
     async function renderWeekdayAvg(el) {
         const userInfo = GM_getValue(STORAGE_KEYS.userInfo) || {};
@@ -653,6 +678,7 @@
             return;
         }
 
+        const includeIdleInit = GM_getValue(STORAGE_KEYS.summaryIncludeIdle, false) ? "checked" : "";
         el.innerHTML = `
             <div class="tat-grid-controls">
                 <label>Faction:</label>
@@ -665,6 +691,10 @@
                     <option value="14" selected>14</option>
                     <option value="30">30</option>
                 </select>
+                <label style="margin-left:8px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" title="Include idle members in the average percentage">
+                    <input type="checkbox" id="tat-summary-include-idle" ${includeIdleInit}>
+                    Include idle
+                </label>
                 <button class="tat-btn tat-btn-export" id="tat-export-summary" style="margin-left:auto" disabled>Export CSV</button>
             </div>
             <div id="tat-summary-container" class="tat-status">Loading...</div>
@@ -689,10 +719,20 @@
 
         document.getElementById("tat-summary-faction").addEventListener("change", load);
         document.getElementById("tat-summary-days").addEventListener("change", load);
+        document.getElementById("tat-summary-include-idle").addEventListener("change", (e) => {
+            GM_setValue(STORAGE_KEYS.summaryIncludeIdle, e.target.checked);
+            if (lastSummaryData) renderWeekdaySummary(lastSummaryData, lastSummaryDays);
+        });
         document.getElementById("tat-export-summary").addEventListener("click", () => {
             if (!lastSummaryData || lastSummaryData.length === 0) return;
-            const headers = ["hour_of_day_utc", "avg_pct_online", "days_sampled", "total_observations"];
-            const rows = lastSummaryData.map((r) => [r.hour_of_day, r.avg_pct_online, r.days_sampled, r.total_observations]);
+            const headers = ["hour_of_day_utc", "avg_pct_online", "avg_pct_online_or_idle", "days_sampled", "total_observations"];
+            const rows = lastSummaryData.map((r) => [
+                r.hour_of_day,
+                r.avg_pct_online,
+                r.avg_pct_online_or_idle ?? "",
+                r.days_sampled,
+                r.total_observations,
+            ]);
             downloadCSV(`activity-summary-${lastSummaryFaction}.csv`, headers, rows);
         });
         load();
@@ -706,6 +746,7 @@
         if (exportBtn) exportBtn.disabled = true;
         lastSummaryData = null;
         lastSummaryFaction = factionId;
+        lastSummaryDays = days;
 
         let data;
         try {
@@ -722,23 +763,41 @@
 
         lastSummaryData = data;
         if (exportBtn) exportBtn.disabled = false;
+        renderWeekdaySummary(data, days);
+    }
+
+    function renderWeekdaySummary(data, days) {
+        const container = document.getElementById("tat-summary-container");
+        if (!container) return;
+        const includeIdleRequested = !!document.getElementById("tat-summary-include-idle")?.checked;
+        // Graceful fallback: old backends don't return avg_pct_online_or_idle.
+        const hasIdleField = data.some((r) => typeof r.avg_pct_online_or_idle === "number");
+        const includeIdle = includeIdleRequested && hasIdleField;
+        const pctOf = (row) => {
+            if (!row) return 0;
+            return includeIdle ? (row.avg_pct_online_or_idle ?? row.avg_pct_online) : row.avg_pct_online;
+        };
+        const labelSuffix = includeIdle ? "online + idle" : "online";
 
         // Render a simple bar chart using divs
-        const maxPct = Math.max(...data.map((r) => r.avg_pct_online), 1);
+        const maxPct = Math.max(...data.map((r) => pctOf(r)), 1);
         let html = `<div style="display:flex;align-items:flex-end;gap:2px;height:180px;margin:16px 0;padding-bottom:24px;position:relative">`;
         for (let h = 0; h < 24; h++) {
             const row = data.find((r) => r.hour_of_day === h);
-            const pct = row ? row.avg_pct_online : 0;
+            const pct = pctOf(row);
             const barH = Math.max((pct / maxPct) * 150, 2);
             const bg = heatColor(pct);
             html += `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
                 <div style="font-size:10px;color:#aaa;margin-bottom:2px">${pct}%</div>
-                <div style="width:100%;height:${barH}px;background:${bg};border-radius:2px 2px 0 0" title="${String(h).padStart(2,'0')}:00 — ${pct}% avg online"></div>
+                <div style="width:100%;height:${barH}px;background:${bg};border-radius:2px 2px 0 0" title="${String(h).padStart(2,'0')}:00 — ${pct}% avg ${labelSuffix}"></div>
                 <div style="font-size:10px;color:#666;margin-top:4px;position:absolute;bottom:0">${String(h).padStart(2,'0')}</div>
             </div>`;
         }
         html += `</div>`;
-        html += `<div style="color:#666;font-size:12px;text-align:center">Hour of day (TCT/UTC) — average % online over ${days} days</div>`;
+        const stale = includeIdleRequested && !hasIdleField
+            ? ` <span style="color:#cc3333">(backend hasn't been updated yet — showing online only)</span>`
+            : "";
+        html += `<div style="color:#666;font-size:12px;text-align:center">Hour of day (TCT/UTC) — average % ${labelSuffix} over ${days} days${stale}</div>`;
         container.innerHTML = html;
     }
 

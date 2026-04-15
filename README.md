@@ -38,8 +38,8 @@ A footer button injected next to Torn's Notes/People panel buttons opens a modal
 
 | Tab | Content |
 |---|---|
-| **Hour Grid** | Color-coded heatmap: date rows × 24 hour columns, showing % of members online each hour. Faction selector (own + watchlist), configurable date range (3/7/14/30 days). All times TCT (UTC). |
-| **Weekday Avg** | Bar chart of average % online per hour-of-day (0–23), aggregated across the selected date range. Spot recurring activity patterns at a glance. |
+| **Hour Grid** | Color-coded heatmap: date rows × 24 hour columns, showing % of members online each hour. Faction selector (own + watchlist), configurable date range (3/7/14/30 days). Optional **Include idle** toggle switches the metric from `online / total` to `(online + idle) / total`. All times TCT (UTC). |
+| **Weekday Avg** | Bar chart of average % online per hour-of-day (0–23), aggregated across the selected date range. Spot recurring activity patterns at a glance. Optional **Include idle** toggle switches the metric from online-only to online+idle (requires the backend to expose `avg_pct_online_or_idle` — a clear inline warning is shown on older deployments). |
 | **Compare** | Side-by-side faction comparison. Sortable member tables with hours online, % online, and estimated battle stats (via FFScouter). Synchronized scrolling. Click a member from each side to see per-user activity heatmaps. War opponents auto-appear in dropdown. |
 | **Settings** | User badge · Watchlist management (candidate picker + manual faction ID, max 5 manual; war opponents auto-managed) · FFScouter API key integration · Account removal. |
 | **Admin** | System dashboard (admin-only): registered users, faction DB stats by division, poll job overview, API call log, server load (CPU/RAM/uptime). |
