@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.1.0
+// @version      2.2.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.1.0";
+    const VERSION = "2.2.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle" };
 
@@ -894,6 +894,7 @@
     function renderCompareTables(leftData, rightData, container, leftBsMap, rightBsMap) {
         if (!container) return;
 
+        const hasRight = Array.isArray(rightData);
         let sortCol = container._sortCol || "pct_online";
         let sortDir = container._sortDir ?? -1;
 
@@ -913,9 +914,9 @@
         function render() {
             const lbs = leftBsMap || new Map();
             const rbs = rightBsMap || new Map();
-            const hasBs = lbs.size > 0 || rbs.size > 0;
+            const hasBs = lbs.size > 0 || (hasRight && rbs.size > 0);
             const sortedL = sortData(leftData, lbs);
-            const sortedR = sortData(rightData, rbs);
+            const sortedR = hasRight ? sortData(rightData, rbs) : [];
             const maxRows = Math.max(sortedL.length, sortedR.length);
 
             const cols = [{ key: "name", label: "Name", align: "left" }];
@@ -927,7 +928,7 @@
                 let h = "";
                 for (const c of cols) {
                     const cls = c.key === sortCol ? (sortDir === 1 ? " sort-asc" : " sort-desc") : "";
-                    h += `<th data-col="${c.key}" class="${cls}" style="${c.align ? "text-align:" + c.align : ""}">${c.label}</th>`;
+                    h += `<th data-col="${c.key}" data-side="${side}" class="${cls}" style="${c.align ? "text-align:" + c.align : ""}">${c.label}</th>`;
                 }
                 return h;
             }
@@ -947,25 +948,35 @@
                     <td style="${bgStyle}color:${m.pct_online > 50 ? "#4caf50" : "#ccc"}">${m.pct_online}%</td>`;
             }
 
-            let html = `<div style="overflow-y:auto;max-height:280px">
-                <table class="tat-grid" style="font-size:12px;table-layout:fixed">
-                <thead><tr>
-                    ${thRow("left")}
-                    <th style="width:8px;background:#1a1a1a;border-left:2px solid #444;border-right:2px solid #444;padding:0"></th>
-                    ${thRow("right")}
-                </tr></thead><tbody>`;
-
             const selL = container._selLeft;
             const selR = container._selRight;
-            for (let i = 0; i < maxRows; i++) {
-                html += `<tr style="cursor:pointer">
-                    ${memberCells(sortedL[i], lbs, "left", selL)}
-                    <td style="background:#1a1a1a;border-left:2px solid #333;border-right:2px solid #333;padding:0"></td>
-                    ${memberCells(sortedR[i], rbs, "right", selR)}
-                </tr>`;
-            }
 
-            html += `</tbody></table></div>`;
+            let html;
+            if (hasRight) {
+                html = `<div style="overflow-y:auto;max-height:280px">
+                    <table class="tat-grid" style="font-size:12px;table-layout:fixed">
+                    <thead><tr>
+                        ${thRow("left")}
+                        <th style="width:8px;background:#1a1a1a;border-left:2px solid #444;border-right:2px solid #444;padding:0"></th>
+                        ${thRow("right")}
+                    </tr></thead><tbody>`;
+                for (let i = 0; i < maxRows; i++) {
+                    html += `<tr style="cursor:pointer">
+                        ${memberCells(sortedL[i], lbs, "left", selL)}
+                        <td style="background:#1a1a1a;border-left:2px solid #333;border-right:2px solid #333;padding:0"></td>
+                        ${memberCells(sortedR[i], rbs, "right", selR)}
+                    </tr>`;
+                }
+                html += `</tbody></table></div>`;
+            } else {
+                html = `<div style="overflow-y:auto;max-height:280px">
+                    <table class="tat-grid" style="font-size:12px;table-layout:fixed">
+                    <thead><tr>${thRow("left")}</tr></thead><tbody>`;
+                for (let i = 0; i < sortedL.length; i++) {
+                    html += `<tr style="cursor:pointer">${memberCells(sortedL[i], lbs, "left", selL)}</tr>`;
+                }
+                html += `</tbody></table></div>`;
+            }
             container.innerHTML = html;
 
             // Sort click — any header sorts both sides
@@ -1032,14 +1043,9 @@
         let compareData = null;
 
         const load = () => {
-            const right = Number(document.getElementById("tat-cmp-right").value);
-            if (!right) {
-                document.getElementById("tat-compare-container").innerHTML =
-                    `<div class="tat-status">Select an opponent faction to compare.</div>`;
-                document.getElementById("tat-user-compare").style.display = "none";
-                return;
-            }
             const left = Number(document.getElementById("tat-cmp-left").value);
+            const rightRaw = Number(document.getElementById("tat-cmp-right").value);
+            const right = rightRaw || null;
             const days = Number(document.getElementById("tat-cmp-days").value);
             fetchAndRenderCompare(left, right, days);
         };
@@ -1059,17 +1065,22 @@
         async function fetchAndRenderCompare(leftId, rightId, days) {
             const container = document.getElementById("tat-compare-container");
             const exportBtn = document.getElementById("tat-export-compare");
-            container.innerHTML = `<div class="tat-status">Loading both factions...</div>`;
+            container.innerHTML = `<div class="tat-status">${rightId ? "Loading both factions..." : "Loading your faction..."}</div>`;
             if (exportBtn) exportBtn.disabled = true;
             compareData = null;
             document.getElementById("tat-user-compare").style.display = "none";
 
             let leftData, rightData;
             try {
-                [leftData, rightData] = await Promise.all([
-                    backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}`),
-                    backendRequest("GET", `/v1/activity/members?faction=${rightId}&days=${days}`),
-                ]);
+                if (rightId) {
+                    [leftData, rightData] = await Promise.all([
+                        backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}`),
+                        backendRequest("GET", `/v1/activity/members?faction=${rightId}&days=${days}`),
+                    ]);
+                } else {
+                    leftData = await backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}`);
+                    rightData = null;
+                }
             } catch (err) {
                 container.innerHTML = `<div class="tat-status" style="color:#ef5350">Failed: ${err.error || err.status}</div>`;
                 return;
@@ -1079,42 +1090,58 @@
             if (exportBtn) exportBtn.disabled = false;
 
             const lOnline = leftData.reduce((s, m) => s + m.hours_online, 0);
-            const rOnline = rightData.reduce((s, m) => s + m.hours_online, 0);
             const lAvgPct = leftData.length ? Math.round(leftData.reduce((s, m) => s + m.pct_online, 0) / leftData.length) : 0;
-            const rAvgPct = rightData.length ? Math.round(rightData.reduce((s, m) => s + m.pct_online, 0) / rightData.length) : 0;
 
-            container.innerHTML = `
-                <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;margin-bottom:16px;text-align:center">
-                    <div style="background:#252525;border:1px solid #333;border-radius:8px;padding:12px">
-                        <div style="color:#4fc3f7;font-size:24px;font-weight:700">${lAvgPct}%</div>
-                        <div style="color:#aaa;font-size:12px;margin-top:2px">${leftData.length} members &middot; ${lOnline}h total</div>
-                    </div>
-                    <div style="display:flex;align-items:center;color:#555;font-size:18px;font-weight:700">vs</div>
-                    <div style="background:#252525;border:1px solid #333;border-radius:8px;padding:12px">
-                        <div style="color:#ef5350;font-size:24px;font-weight:700">${rAvgPct}%</div>
-                        <div style="color:#aaa;font-size:12px;margin-top:2px">${rightData.length} members &middot; ${rOnline}h total</div>
-                    </div>
-                </div>
-                <div style="color:#888;font-size:12px;margin-bottom:12px">Click a member name from each side to compare their individual activity heatmaps.</div>
-                <div id="tat-cmp-tables"></div>
-            `;
+            let summaryHTML, hintHTML;
+            if (rightData) {
+                const rOnline = rightData.reduce((s, m) => s + m.hours_online, 0);
+                const rAvgPct = rightData.length ? Math.round(rightData.reduce((s, m) => s + m.pct_online, 0) / rightData.length) : 0;
+                summaryHTML = `
+                    <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;margin-bottom:16px;text-align:center">
+                        <div style="background:#252525;border:1px solid #333;border-radius:8px;padding:12px">
+                            <div style="color:#4fc3f7;font-size:24px;font-weight:700">${lAvgPct}%</div>
+                            <div style="color:#aaa;font-size:12px;margin-top:2px">${leftData.length} members &middot; ${lOnline}h total</div>
+                        </div>
+                        <div style="display:flex;align-items:center;color:#555;font-size:18px;font-weight:700">vs</div>
+                        <div style="background:#252525;border:1px solid #333;border-radius:8px;padding:12px">
+                            <div style="color:#ef5350;font-size:24px;font-weight:700">${rAvgPct}%</div>
+                            <div style="color:#aaa;font-size:12px;margin-top:2px">${rightData.length} members &middot; ${rOnline}h total</div>
+                        </div>
+                    </div>`;
+                hintHTML = `<div style="color:#888;font-size:12px;margin-bottom:12px">Click a member name to view their heatmap. Select one from each side to compare.</div>`;
+            } else {
+                summaryHTML = `
+                    <div style="margin-bottom:16px;text-align:center">
+                        <div style="background:#252525;border:1px solid #333;border-radius:8px;padding:12px;display:inline-block;min-width:220px">
+                            <div style="color:#4fc3f7;font-size:24px;font-weight:700">${lAvgPct}%</div>
+                            <div style="color:#aaa;font-size:12px;margin-top:2px">${leftData.length} members &middot; ${lOnline}h total</div>
+                        </div>
+                    </div>`;
+                hintHTML = `<div style="color:#888;font-size:12px;margin-bottom:12px">Click a member name to view their heatmap. Select an opponent above to compare factions side-by-side.</div>`;
+            }
+
+            container.innerHTML = `${summaryHTML}${hintHTML}<div id="tat-cmp-tables"></div>`;
 
             const tablesContainer = document.getElementById("tat-cmp-tables");
             renderCompareTables(leftData, rightData, tablesContainer, null, null);
 
             // Fetch battle stats from FFScouter (if key set)
             if (GM_getValue(STORAGE_KEYS.ffscouterKey)) {
-                const allIds = [...leftData.map((m) => m.user_id), ...rightData.map((m) => m.user_id)];
+                const allIds = rightData
+                    ? [...leftData.map((m) => m.user_id), ...rightData.map((m) => m.user_id)]
+                    : leftData.map((m) => m.user_id);
                 fetchBattleStats(allIds).then((bsMap) => {
                     if (bsMap.size === 0) return;
                     const leftBs = new Map(), rightBs = new Map();
                     for (const m of leftData) { const v = bsMap.get(m.user_id); if (v) leftBs.set(m.user_id, v); }
-                    for (const m of rightData) { const v = bsMap.get(m.user_id); if (v) rightBs.set(m.user_id, v); }
+                    if (rightData) {
+                        for (const m of rightData) { const v = bsMap.get(m.user_id); if (v) rightBs.set(m.user_id, v); }
+                    }
                     if (tablesContainer._setBS) tablesContainer._setBS(leftBs, rightBs);
                 });
             }
 
-            // Per-user heatmap comparison on name click
+            // Per-user heatmap on name click — renders instantly for one side, compares when both selected
             let selectedLeft = null, selectedRight = null;
 
             tablesContainer.addEventListener("click", (e) => {
@@ -1131,9 +1158,8 @@
                     selectedRight = { uid, name };
                     tablesContainer._selRight = uid;
                 }
-                // Re-render to apply full-row highlighting
                 if (tablesContainer._render) tablesContainer._render();
-                if (selectedLeft && selectedRight) loadUserCompare(selectedLeft, selectedRight, days);
+                if (selectedLeft || selectedRight) loadUserCompare(selectedLeft, selectedRight, days);
             });
         }
 
@@ -1143,20 +1169,24 @@
     async function loadUserCompare(leftUser, rightUser, days) {
         const container = document.getElementById("tat-user-compare");
         container.style.display = "block";
-        container.innerHTML = `<div class="tat-status" style="margin-top:16px">Loading heatmaps for ${leftUser.name} vs ${rightUser.name}...</div>`;
 
-        let leftHours, rightHours;
+        const both = leftUser && rightUser;
+        const loadingLabel = both
+            ? `${leftUser.name} vs ${rightUser.name}`
+            : (leftUser || rightUser).name;
+        container.innerHTML = `<div class="tat-status" style="margin-top:16px">Loading heatmap${both ? "s" : ""} for ${loadingLabel}...</div>`;
+
+        let leftHours = null, rightHours = null;
         try {
-            [leftHours, rightHours] = await Promise.all([
-                backendRequest("GET", `/v1/activity/user-hourly?user=${leftUser.uid}&days=${days}`),
-                backendRequest("GET", `/v1/activity/user-hourly?user=${rightUser.uid}&days=${days}`),
-            ]);
+            const jobs = [];
+            if (leftUser) jobs.push(backendRequest("GET", `/v1/activity/user-hourly?user=${leftUser.uid}&days=${days}`).then((r) => { leftHours = r; }));
+            if (rightUser) jobs.push(backendRequest("GET", `/v1/activity/user-hourly?user=${rightUser.uid}&days=${days}`).then((r) => { rightHours = r; }));
+            await Promise.all(jobs);
         } catch (err) {
             container.innerHTML = `<div class="tat-status" style="color:#ef5350;margin-top:16px">Failed to load user data.</div>`;
             return;
         }
 
-        // Collect all unique dates from both users
         const allDates = new Set();
         const buildMap = (data) => {
             const m = new Map();
@@ -1171,8 +1201,8 @@
             return m;
         };
 
-        const leftMap = buildMap(leftHours);
-        const rightMap = buildMap(rightHours);
+        const leftMap = leftHours ? buildMap(leftHours) : null;
+        const rightMap = rightHours ? buildMap(rightHours) : null;
         const sortedDates = [...allDates].sort().reverse();
         const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -1203,11 +1233,18 @@
             return html;
         }
 
+        const title = both
+            ? `User Comparison: ${leftUser.name} vs ${rightUser.name}`
+            : `Activity: ${(leftUser || rightUser).name}`;
+        const heatmaps = [
+            leftUser ? `<div style="margin-bottom:16px">${userHeatmapHTML(leftUser.name, "#4fc3f7", leftMap)}</div>` : "",
+            rightUser ? `<div>${userHeatmapHTML(rightUser.name, "#ef5350", rightMap)}</div>` : "",
+        ].join("");
+
         container.innerHTML = `
             <div style="margin-top:16px;padding-top:16px;border-top:1px solid #333">
-                <h3 style="color:#fff;font-size:15px;margin:0 0 12px">User Comparison: ${leftUser.name} vs ${rightUser.name}</h3>
-                <div style="margin-bottom:16px">${userHeatmapHTML(leftUser.name, "#4fc3f7", leftMap)}</div>
-                <div>${userHeatmapHTML(rightUser.name, "#ef5350", rightMap)}</div>
+                <h3 style="color:#fff;font-size:15px;margin:0 0 12px">${title}</h3>
+                ${heatmaps}
                 <div class="tat-legend" style="margin-top:8px">
                     <span class="tat-legend-box" style="background:#2e7d32"></span> Online
                     <span class="tat-legend-box" style="background:#5d4037"></span> Idle
