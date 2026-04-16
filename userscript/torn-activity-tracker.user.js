@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.4
+// @version      2.4.5
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,9 +41,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.4";
+    const VERSION = "2.4.5";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -121,6 +121,21 @@
             }
         }
         throw lastErr;
+    }
+
+    // Watchlist fetch with local cache fallback. PDA sometimes fails the
+    // initial /v1/watchlist call and the dropdowns end up empty; falling
+    // back to the last successful response keeps the UI usable.
+    async function fetchWatchlistCached() {
+        try {
+            const list = await backendRequest("GET", "/v1/watchlist");
+            GM_setValue(STORAGE_KEYS.watchlistCache, list);
+            return list;
+        } catch (err) {
+            const cached = GM_getValue(STORAGE_KEYS.watchlistCache);
+            if (Array.isArray(cached)) return cached;
+            throw err;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -584,7 +599,7 @@
 
         // Populate watchlist factions into dropdown
         try {
-            const watchlist = await backendRequest("GET", "/v1/watchlist");
+            const watchlist = await fetchWatchlistCached();
             const sel = document.getElementById("tat-grid-faction");
             for (const f of watchlist) {
                 const opt = document.createElement("option");
@@ -761,7 +776,7 @@
         `;
 
         try {
-            const watchlist = await backendRequest("GET", "/v1/watchlist");
+            const watchlist = await fetchWatchlistCached();
             const sel = document.getElementById("tat-summary-faction");
             const selOpp = document.getElementById("tat-summary-faction-opp");
             for (const f of watchlist) {
@@ -881,7 +896,7 @@
 
         const chartHTML = (dataset, title, titleColor) => {
             let out = `<div style="color:${titleColor};font-size:12px;font-weight:700;margin-top:12px;margin-bottom:4px">${title}</div>`;
-            out += `<div class="tat-chart-wrap"><div style="min-width:480px;display:flex;align-items:flex-end;gap:2px;height:180px;margin:0;padding-bottom:24px;position:relative">`;
+            out += `<div style="display:flex;align-items:flex-end;gap:2px;height:180px;margin:0;padding-bottom:24px;position:relative">`;
             for (let h = 0; h < 24; h++) {
                 const row = dataset.find((r) => r.hour_of_day === h);
                 const pct = pctOf(row);
@@ -893,16 +908,18 @@
                     <div style="font-size:10px;color:#666;margin-top:4px;position:absolute;bottom:0">${String(h).padStart(2,'0')}</div>
                 </div>`;
             }
-            out += `</div></div>`;
+            out += `</div>`;
             return out;
         };
 
+        // Both charts share one horizontal-scroll container so they slide in sync on narrow screens.
         const myTitle = lastSummaryFactionLabel || `Faction ${lastSummaryFaction}`;
-        let html = chartHTML(data, myTitle, "#4fc3f7");
+        let inner = chartHTML(data, myTitle, "#4fc3f7");
         if (oppData) {
             const oppTitle = lastSummaryFactionOppLabel || `Faction ${lastSummaryFactionOpp}`;
-            html += chartHTML(oppData, oppTitle, "#ef5350");
+            inner += chartHTML(oppData, oppTitle, "#ef5350");
         }
+        let html = `<div class="tat-chart-wrap"><div style="min-width:480px">${inner}</div></div>`;
 
         const stale = includeIdleRequested && !hasIdleField
             ? ` <span style="color:#cc3333">(backend hasn't been updated yet — showing online only)</span>`
@@ -1087,7 +1104,7 @@
 
         // Populate dropdowns from watchlist only (war opponents are auto-added to watchlist)
         try {
-            const watchlist = await backendRequest("GET", "/v1/watchlist");
+            const watchlist = await fetchWatchlistCached();
             const leftSel = document.getElementById("tat-cmp-left");
             const rightSel = document.getElementById("tat-cmp-right");
             for (const f of watchlist) {
@@ -1611,7 +1628,7 @@
         }
 
         try {
-            const list = await backendRequest("GET", "/v1/watchlist");
+            const list = await fetchWatchlistCached();
             if (list.length === 0) {
                 container.innerHTML = `<span style="color:#666">No factions on your watchlist.</span>`;
             } else {
