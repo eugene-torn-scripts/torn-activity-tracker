@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.3
+// @version      2.4.4
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.3";
+    const VERSION = "2.4.4";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col" };
 
@@ -78,7 +78,7 @@
     //  Backend client
     // ═══════════════════════════════════════════════════════════
 
-    function backendRequest(method, path, body) {
+    function _backendRequestOnce(method, path, body) {
         const apiKey = GM_getValue(STORAGE_KEYS.apiKey);
         const url = `${BACKEND_BASE}${path}`;
         const t0 = performance.now();
@@ -101,6 +101,26 @@
                 onerror: () => { perfTrack(`${method} ${path} → ERR`, t0); reject({ status: 0, error: "network_error" }); },
             });
         });
+    }
+
+    // Retry transient network errors. Torn PDA's GM_xmlhttpRequest sometimes
+    // rejects with ERR 0ms under concurrent load — desktop is fine. Only retry
+    // status 0 (no response); real HTTP errors (4xx/5xx) fall straight through.
+    async function backendRequest(method, path, body) {
+        const backoffs = [0, 300, 800];
+        let lastErr;
+        for (let attempt = 0; attempt < backoffs.length; attempt++) {
+            if (backoffs[attempt] > 0) {
+                await new Promise((r) => setTimeout(r, backoffs[attempt]));
+            }
+            try {
+                return await _backendRequestOnce(method, path, body);
+            } catch (err) {
+                lastErr = err;
+                if (err.status !== 0) throw err;
+            }
+        }
+        throw lastErr;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -253,6 +273,7 @@
 
 /* Hour grid heatmap */
 .tat-grid-wrap{overflow-x:auto}
+.tat-chart-wrap{overflow-x:auto}
 .tat-grid{border-collapse:collapse;font-size:12px;width:100%}
 .tat-grid th,.tat-grid td{padding:4px 6px;text-align:center;border:1px solid #333;white-space:nowrap}
 .tat-grid th{color:#999;font-weight:600;background:#222;position:sticky;top:0}
@@ -860,7 +881,7 @@
 
         const chartHTML = (dataset, title, titleColor) => {
             let out = `<div style="color:${titleColor};font-size:12px;font-weight:700;margin-top:12px;margin-bottom:4px">${title}</div>`;
-            out += `<div style="display:flex;align-items:flex-end;gap:2px;height:180px;margin:0;padding-bottom:24px;position:relative">`;
+            out += `<div class="tat-chart-wrap"><div style="min-width:480px;display:flex;align-items:flex-end;gap:2px;height:180px;margin:0;padding-bottom:24px;position:relative">`;
             for (let h = 0; h < 24; h++) {
                 const row = dataset.find((r) => r.hour_of_day === h);
                 const pct = pctOf(row);
@@ -872,7 +893,7 @@
                     <div style="font-size:10px;color:#666;margin-top:4px;position:absolute;bottom:0">${String(h).padStart(2,'0')}</div>
                 </div>`;
             }
-            out += `</div>`;
+            out += `</div></div>`;
             return out;
         };
 
