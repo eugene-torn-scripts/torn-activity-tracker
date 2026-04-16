@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.3.0
+// @version      2.4.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.3.0";
+    const VERSION = "2.4.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col" };
 
@@ -180,10 +180,6 @@
         const style = document.createElement("style");
         style.id = "tat-style";
         style.textContent = `
-/* Footer button */
-#tat-footer-btn{background:linear-gradient(to bottom,#8b2020,#5c1010)!important}
-#tat-footer-btn:hover{background:linear-gradient(to bottom,#a52a2a,#7a1a1a)!important}
-
 /* Overlay & Panel */
 #tat-overlay{display:none;position:fixed;inset:0;z-index:999998;background:rgba(0,0,0,.7)}
 #tat-panel{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:999999;
@@ -1863,56 +1859,184 @@
     }
 
     // ═══════════════════════════════════════════════════════════
-    //  Footer button injection
+    //  Shared footer menu (eugene-torn-scripts userscripts)
+    //  — 1 script installed: its icon goes in the footer directly.
+    //  — 2+ installed: a single 3-dots menu holds them all and
+    //    expands a row above the footer on click.
+    //  Idempotent and duplicated verbatim across scripts. The
+    //  __eugFooterMenuLoaded guard ensures setup runs once per page.
     // ═══════════════════════════════════════════════════════════
 
-    function injectFooterButton() {
-        const create = () => {
-            if (document.getElementById("tat-footer-btn")) return true;
-            const refBtn =
-                document.getElementById("notes_panel_button") ||
-                document.getElementById("people_panel_button");
-            if (!refBtn) return false;
+    (function setupEugFooterMenu() {
+        if (window.__eugFooterMenuLoaded) return;
+        window.__eugFooterMenuLoaded = true;
+        window.__eugeneScripts = window.__eugeneScripts || [];
 
-            const btnClasses = refBtn.className;
+        function injectCSS() {
+            if (document.getElementById("eug-footer-style")) return;
+            const style = document.createElement("style");
+            style.id = "eug-footer-style";
+            style.textContent = `
+[data-eug="menu"]{position:relative;background:linear-gradient(to bottom,#444,#2a2a2a)!important}
+[data-eug="menu"]:hover{background:linear-gradient(to bottom,#555,#333)!important}
+[data-eug-row]{display:none;position:absolute;bottom:calc(100% + 6px);left:0;
+  padding:4px;background:rgba(20,20,20,0.96);border:1px solid #444;border-radius:6px;
+  flex-direction:row;gap:4px;z-index:9999998;white-space:nowrap}
+[data-eug-row].eug-open{display:flex}
+`;
+            document.head.appendChild(style);
+        }
+
+        function injectEntryCSS(entry) {
+            if (!entry.color) return;
+            const id = `eug-color-${entry.id}`;
+            const existing = document.getElementById(id);
+            const dark = entry.colorDark || "#222";
+            const hover = entry.hoverColor || entry.color;
+            const css = `
+[data-eug-id="${entry.id}"]{background:linear-gradient(to bottom, ${entry.color}, ${dark})!important}
+[data-eug-id="${entry.id}"]:hover{background:linear-gradient(to bottom, ${hover}, ${entry.color})!important}
+`;
+            if (existing) { existing.textContent = css; return; }
+            const el = document.createElement("style");
+            el.id = id;
+            el.textContent = css;
+            document.head.appendChild(el);
+        }
+
+        function findRefBtn() {
+            return document.getElementById("notes_panel_button")
+                || document.getElementById("people_panel_button");
+        }
+
+        function makeScriptBtn(entry, refBtn, role) {
             const iconClasses = refBtn.querySelector("svg")?.className?.baseVal || "";
-
             const btn = document.createElement("button");
             btn.type = "button";
-            btn.id = "tat-footer-btn";
-            btn.className = btnClasses;
-            btn.title = "Torn Activity Tracker";
-            btn.style.cssText = "background:linear-gradient(to bottom,#8b2020,#5c1010)!important";
-            btn.addEventListener("mouseenter", () => { btn.style.cssText = "background:linear-gradient(to bottom,#a52a2a,#7a1a1a)!important"; });
-            btn.addEventListener("mouseleave", () => { btn.style.cssText = "background:linear-gradient(to bottom,#8b2020,#5c1010)!important"; });
+            btn.className = refBtn.className;
+            btn.title = entry.name;
+            btn.setAttribute("data-eug", role);
+            btn.setAttribute("data-eug-id", entry.id);
+            const svg = (entry.iconSVG || "").replace(/<svg\b([^>]*)>/, (match, attrs) =>
+                /\sclass\s*=/.test(attrs) ? match : `<svg${attrs} class="${iconClasses}">`);
+            btn.innerHTML = svg;
+            btn.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const row = btn.closest("[data-eug-row]");
+                if (row) row.classList.remove("eug-open");
+                try { entry.onClick(); } catch { /* noop */ }
+            });
+            injectEntryCSS(entry);
+            return btn;
+        }
+
+        function makeMenuBtn(refBtn) {
+            const iconClasses = refBtn.querySelector("svg")?.className?.baseVal || "";
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = refBtn.className;
+            btn.title = "My userscripts";
+            btn.setAttribute("data-eug", "menu");
             btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" class="${iconClasses}">
-                <defs><linearGradient id="tat_grad" x1="0.5" x2="0.5" y2="1" gradientUnits="objectBoundingBox">
+                <defs><linearGradient id="eug_menu_grad" x1="0.5" x2="0.5" y2="1" gradientUnits="objectBoundingBox">
                     <stop offset="0" stop-color="#ddd"/><stop offset="1" stop-color="#999"/>
                 </linearGradient></defs>
-                <g fill="url(#tat_grad)"><path d="M3 3h6v6H3V3zm0 8h6v6H3v-6zm0 8h6v2H3v-2zm8-16h10v2H11V3zm0 4h10v2H11V7zm0 4h10v2H11v-2zm0 4h10v2H11v-2zm0 4h10v2H11v-2z"/></g>
+                <g fill="url(#eug_menu_grad)">
+                    <circle cx="5" cy="12" r="2"/>
+                    <circle cx="12" cy="12" r="2"/>
+                    <circle cx="19" cy="12" r="2"/>
+                </g>
             </svg>`;
             btn.addEventListener("click", (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                togglePanel(!panelOpen);
+                const row = btn.querySelector("[data-eug-row]");
+                if (row) row.classList.toggle("eug-open");
             });
-            refBtn.parentNode.insertBefore(btn, refBtn);
-            return true;
-        };
+            return btn;
+        }
 
-        if (create()) return;
-        const obs = new MutationObserver(() => { if (create()) obs.disconnect(); });
-        obs.observe(document.body, { childList: true, subtree: true });
-        setTimeout(() => obs.disconnect(), 30000);
-    }
+        function render() {
+            const refBtn = findRefBtn();
+            if (!refBtn) return false;
+            injectCSS();
+
+            const parent = refBtn.parentNode;
+            // Remove any prior eugene-managed top-level buttons (not items inside a row)
+            parent.querySelectorAll('[data-eug]').forEach((el) => {
+                if (el.getAttribute("data-eug") === "item") return;
+                el.remove();
+            });
+
+            const scripts = window.__eugeneScripts || [];
+            if (scripts.length === 0) return true;
+
+            if (scripts.length === 1) {
+                parent.insertBefore(makeScriptBtn(scripts[0], refBtn, "solo"), refBtn);
+            } else {
+                const menuBtn = makeMenuBtn(refBtn);
+                const row = document.createElement("div");
+                row.setAttribute("data-eug-row", "");
+                for (const s of scripts) row.appendChild(makeScriptBtn(s, refBtn, "item"));
+                menuBtn.appendChild(row);
+                parent.insertBefore(menuBtn, refBtn);
+            }
+            return true;
+        }
+
+        function mount() {
+            if (render()) return;
+            const obs = new MutationObserver(() => { if (render()) obs.disconnect(); });
+            obs.observe(document.body, { childList: true, subtree: true });
+            setTimeout(() => obs.disconnect(), 30000);
+        }
+
+        window.addEventListener("eugene-scripts-updated", render);
+        document.addEventListener("click", (e) => {
+            const menuBtn = document.querySelector('[data-eug="menu"]');
+            if (!menuBtn) return;
+            const row = menuBtn.querySelector('[data-eug-row]');
+            if (row && row.classList.contains("eug-open") && !menuBtn.contains(e.target)) {
+                row.classList.remove("eug-open");
+            }
+        });
+
+        window.registerEugeneScript = function (entry) {
+            const list = window.__eugeneScripts;
+            const i = list.findIndex((s) => s.id === entry.id);
+            if (i >= 0) list[i] = entry;
+            else list.push(entry);
+            window.dispatchEvent(new CustomEvent("eugene-scripts-updated"));
+        };
+        window.mountEugeneFooterMenu = mount;
+    })();
 
     // ═══════════════════════════════════════════════════════════
     //  Boot
     // ═══════════════════════════════════════════════════════════
 
+    function registerAndMount() {
+        window.registerEugeneScript({
+            id: "tat",
+            name: "Torn Activity Tracker",
+            color: "#8b2020",
+            colorDark: "#5c1010",
+            hoverColor: "#a52a2a",
+            iconSVG: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+                <defs><linearGradient id="tat_grad" x1="0.5" x2="0.5" y2="1" gradientUnits="objectBoundingBox">
+                    <stop offset="0" stop-color="#ddd"/><stop offset="1" stop-color="#999"/>
+                </linearGradient></defs>
+                <g fill="url(#tat_grad)"><path d="M3 3h6v6H3V3zm0 8h6v6H3v-6zm0 8h6v2H3v-2zm8-16h10v2H11V3zm0 4h10v2H11V7zm0 4h10v2H11v-2zm0 4h10v2H11v-2zm0 4h10v2H11v-2z"/></g>
+            </svg>`,
+            onClick: () => togglePanel(!panelOpen),
+        });
+        window.mountEugeneFooterMenu();
+    }
+
     if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", () => injectFooterButton());
+        document.addEventListener("DOMContentLoaded", registerAndMount);
     } else {
-        injectFooterButton();
+        registerAndMount();
     }
 })();
