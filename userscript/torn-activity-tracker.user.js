@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.5
+// @version      2.4.6
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.5";
+    const VERSION = "2.4.6";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
@@ -185,8 +185,43 @@
     //  Auth helpers
     // ═══════════════════════════════════════════════════════════
 
+    function hasValidUserInfo(info) {
+        return !!(info && typeof info === "object" && info.torn_user_id);
+    }
+
     function isAuthenticated() {
-        return Boolean(GM_getValue(STORAGE_KEYS.apiKey));
+        // Require BOTH a stored key AND a valid userInfo object. An apiKey-only
+        // state ("Unknown user" in the UI) can happen on Torn PDA or after
+        // interrupted registration where GM_setValue(apiKey) lands but the
+        // register response / GM_setValue(userInfo) never does — or when a
+        // reinstall preserves old GM storage across versions. recoverAuthIfNeeded
+        // heals this by re-registering with the stored key before we gate.
+        return Boolean(GM_getValue(STORAGE_KEYS.apiKey))
+            && hasValidUserInfo(GM_getValue(STORAGE_KEYS.userInfo));
+    }
+
+    /**
+     * If apiKey is stored but userInfo is missing/malformed, try to restore
+     * userInfo by re-registering (POST /v1/auth/register is idempotent —
+     * server-side MERGE). If the stored key is invalid, clear both so the
+     * auth screen shows instead of the "Unknown user" main UI.
+     *
+     * @returns {Promise<boolean>}  true if state was healed (or already healthy)
+     */
+    async function recoverAuthIfNeeded() {
+        const apiKey = GM_getValue(STORAGE_KEYS.apiKey);
+        const userInfo = GM_getValue(STORAGE_KEYS.userInfo);
+        if (!apiKey) return false;                    // not auth'd, let caller show auth screen
+        if (hasValidUserInfo(userInfo)) return true;  // healthy
+        try {
+            const info = await backendRequest("POST", "/v1/auth/register", { api_key: apiKey });
+            GM_setValue(STORAGE_KEYS.userInfo, info);
+            return true;
+        } catch {
+            GM_deleteValue(STORAGE_KEYS.apiKey);
+            GM_deleteValue(STORAGE_KEYS.userInfo);
+            return false;
+        }
     }
 
     async function register(apiKey) {
@@ -397,12 +432,23 @@
         });
     }
 
-    function togglePanel(show) {
+    async function togglePanel(show) {
         createPanel();
         panelOpen = show;
         document.getElementById("tat-panel").style.display = show ? "flex" : "none";
         document.getElementById("tat-overlay").style.display = show ? "block" : "none";
-        if (show) { renderTabs(); renderContent(); }
+        if (!show) return;
+
+        // Heal any apiKey-without-userInfo state (stale install, interrupted
+        // register, PDA storage quirk) before deciding auth vs main UI.
+        if (GM_getValue(STORAGE_KEYS.apiKey) && !hasValidUserInfo(GM_getValue(STORAGE_KEYS.userInfo))) {
+            const el = document.getElementById("tat-content");
+            if (el) el.innerHTML = `<div class="tat-status">Restoring session…</div>`;
+            await recoverAuthIfNeeded();
+        }
+
+        renderTabs();
+        renderContent();
     }
 
     function renderTabs() {
