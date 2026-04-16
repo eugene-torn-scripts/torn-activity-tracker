@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.7
+// @version      2.4.8
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.7";
+    const VERSION = "2.4.8";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
@@ -82,21 +82,15 @@
         const apiKey = GM_getValue(STORAGE_KEYS.apiKey);
         const url = `${BACKEND_BASE}${path}`;
         const t0 = performance.now();
-        // Torn PDA's GM_xmlhttpRequest silently downgrades DELETE (and some
-        // other verbs) to GET when the payload is empty — we saw DELETE
-        // /v1/watchlist/:id arriving server-side as GET /v1/watchlist/:id,
-        // which 404s since no GET route exists. Forcing a dummy body keeps
-        // PDA from mangling the method. Backend's JSON parser accepts {}.
-        const effectiveBody = body != null ? body : (method === "DELETE" ? {} : null);
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method,
                 url,
                 headers: {
-                    ...(effectiveBody != null ? { "Content-Type": "application/json" } : {}),
+                    ...(body ? { "Content-Type": "application/json" } : {}),
                     ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
                 },
-                data: effectiveBody != null ? JSON.stringify(effectiveBody) : undefined,
+                data: body ? JSON.stringify(body) : undefined,
                 onload: (res) => {
                     perfTrack(`${method} ${path} → ${res.status}`, t0);
                     let data = {};
@@ -243,7 +237,10 @@
     }
 
     async function logout() {
-        try { await backendRequest("DELETE", "/v1/auth/me"); } catch { /* ignore */ }
+        // Use POST /v1/auth/logout instead of DELETE /v1/auth/me. Torn PDA's
+        // GM_xmlhttpRequest silently rewrites DELETE to GET on some installs,
+        // so logout would silently no-op on mobile. Backend accepts both.
+        try { await backendRequest("POST", "/v1/auth/logout"); } catch { /* ignore */ }
         GM_deleteValue(STORAGE_KEYS.apiKey);
         GM_deleteValue(STORAGE_KEYS.userInfo);
     }
@@ -1669,7 +1666,9 @@
                 btn.disabled = true;
                 btn.textContent = "...";
                 try {
-                    await backendRequest("DELETE", `/v1/watchlist/${fid}`);
+                    // POST alias for DELETE — see deleteOwnAccount / removeWatchlistEntry
+                    // in the backend. Torn PDA rewrites DELETE to GET on some builds.
+                    await backendRequest("POST", `/v1/watchlist/${fid}/delete`);
                     await loadWatchlist();
                     loadCandidates();
                 } catch {
