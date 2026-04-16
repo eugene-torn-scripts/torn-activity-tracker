@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.0
+// @version      2.4.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.0";
+    const VERSION = "2.4.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col" };
 
@@ -1872,17 +1872,19 @@
         window.__eugFooterMenuLoaded = true;
         window.__eugeneScripts = window.__eugeneScripts || [];
 
+        const ROW_ID = "eug-footer-row";
+
         function injectCSS() {
             if (document.getElementById("eug-footer-style")) return;
             const style = document.createElement("style");
             style.id = "eug-footer-style";
             style.textContent = `
-[data-eug="menu"]{position:relative;background:linear-gradient(to bottom,#444,#2a2a2a)!important}
+[data-eug="menu"]{background:linear-gradient(to bottom,#444,#2a2a2a)!important}
 [data-eug="menu"]:hover{background:linear-gradient(to bottom,#555,#333)!important}
-[data-eug-row]{display:none;position:absolute;bottom:calc(100% + 6px);left:0;
-  padding:4px;background:rgba(20,20,20,0.96);border:1px solid #444;border-radius:6px;
-  flex-direction:row;gap:4px;z-index:9999998;white-space:nowrap}
-[data-eug-row].eug-open{display:flex}
+#${ROW_ID}{display:none;position:fixed;padding:4px;
+  background:rgba(20,20,20,0.96);border:1px solid #444;border-radius:6px;
+  gap:4px;z-index:2147483647;white-space:nowrap;pointer-events:auto}
+#${ROW_ID}.eug-open{display:flex;flex-direction:row}
 `;
             document.head.appendChild(style);
         }
@@ -1909,6 +1911,25 @@
                 || document.getElementById("people_panel_button");
         }
 
+        function getRow() { return document.getElementById(ROW_ID); }
+        function closeRow() { const r = getRow(); if (r) r.classList.remove("eug-open"); }
+
+        function openRow(menuBtn) {
+            const row = getRow();
+            if (!row) return;
+            const rect = menuBtn.getBoundingClientRect();
+            row.classList.add("eug-open");
+            const rowRect = row.getBoundingClientRect();
+            const gap = 6;
+            // Bottom-anchor the row above the menu button; clamp so first icon sits over the menu icon
+            const centerX = rect.left + rect.width / 2;
+            let left = centerX - rowRect.width / 2;
+            const maxLeft = window.innerWidth - rowRect.width - 4;
+            left = Math.max(4, Math.min(left, maxLeft));
+            row.style.left = left + "px";
+            row.style.bottom = (window.innerHeight - rect.top + gap) + "px";
+        }
+
         function makeScriptBtn(entry, refBtn, role) {
             const iconClasses = refBtn.querySelector("svg")?.className?.baseVal || "";
             const btn = document.createElement("button");
@@ -1923,8 +1944,7 @@
             btn.addEventListener("click", (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const row = btn.closest("[data-eug-row]");
-                if (row) row.classList.remove("eug-open");
+                closeRow();
                 try { entry.onClick(); } catch { /* noop */ }
             });
             injectEntryCSS(entry);
@@ -1951,8 +1971,9 @@
             btn.addEventListener("click", (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const row = btn.querySelector("[data-eug-row]");
-                if (row) row.classList.toggle("eug-open");
+                const row = getRow();
+                if (row && row.classList.contains("eug-open")) closeRow();
+                else openRow(btn);
             });
             return btn;
         }
@@ -1963,11 +1984,9 @@
             injectCSS();
 
             const parent = refBtn.parentNode;
-            // Remove any prior eugene-managed top-level buttons (not items inside a row)
-            parent.querySelectorAll('[data-eug]').forEach((el) => {
-                if (el.getAttribute("data-eug") === "item") return;
-                el.remove();
-            });
+            parent.querySelectorAll('[data-eug]').forEach((el) => el.remove());
+            const oldRow = getRow();
+            if (oldRow) oldRow.remove();
 
             const scripts = window.__eugeneScripts || [];
             if (scripts.length === 0) return true;
@@ -1976,11 +1995,12 @@
                 parent.insertBefore(makeScriptBtn(scripts[0], refBtn, "solo"), refBtn);
             } else {
                 const menuBtn = makeMenuBtn(refBtn);
+                parent.insertBefore(menuBtn, refBtn);
                 const row = document.createElement("div");
+                row.id = ROW_ID;
                 row.setAttribute("data-eug-row", "");
                 for (const s of scripts) row.appendChild(makeScriptBtn(s, refBtn, "item"));
-                menuBtn.appendChild(row);
-                parent.insertBefore(menuBtn, refBtn);
+                document.body.appendChild(row);
             }
             return true;
         }
@@ -1994,13 +2014,16 @@
 
         window.addEventListener("eugene-scripts-updated", render);
         document.addEventListener("click", (e) => {
+            const row = getRow();
+            if (!row || !row.classList.contains("eug-open")) return;
             const menuBtn = document.querySelector('[data-eug="menu"]');
-            if (!menuBtn) return;
-            const row = menuBtn.querySelector('[data-eug-row]');
-            if (row && row.classList.contains("eug-open") && !menuBtn.contains(e.target)) {
-                row.classList.remove("eug-open");
-            }
+            if (menuBtn && menuBtn.contains(e.target)) return;
+            if (row.contains(e.target)) return;
+            closeRow();
         });
+        document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRow(); });
+        window.addEventListener("scroll", closeRow, { passive: true });
+        window.addEventListener("resize", closeRow);
 
         window.registerEugeneScript = function (entry) {
             const list = window.__eugeneScripts;
