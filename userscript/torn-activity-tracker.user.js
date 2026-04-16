@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.2.0
+// @version      2.3.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,9 +40,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.2.0";
+    const VERSION = "2.3.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -271,13 +271,30 @@
 /* Compare layout */
 .tat-cmp-name{cursor:pointer}
 .tat-cmp-name:hover{text-decoration:underline}
+.tat-mobile-col-picker{display:none}
+
+/* Combobox (watchlist candidate search) */
+.tat-combobox{position:relative}
+.tat-combobox-list{max-height:220px;overflow-y:auto;background:#252525;border:1px solid #444;border-radius:4px;
+  position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:10}
+.tat-combo-item{padding:6px 10px;cursor:pointer;color:#ddd;font-size:13px;border-bottom:1px solid #2a2a2a}
+.tat-combo-item:last-child{border-bottom:none}
+.tat-combo-item:hover{background:#333;color:#fff}
 
 /* Mobile */
 @media(max-width:768px){
   #tat-panel{width:100vw!important;max-width:100vw;min-width:0;border-radius:0;top:0;left:0;
     transform:none;max-height:100vh;height:100vh}
+  #tat-content{padding:10px}
+  .tat-tab{padding:8px 12px;font-size:13px}
   .tat-grid{font-size:10px}
   .tat-grid th,.tat-grid td{padding:2px 3px}
+  .tat-grid td.tat-cell{min-width:18px;font-size:10px}
+  .tat-grid .tat-day-label{min-width:52px;font-size:10px}
+  .tat-mobile-col-picker{display:flex!important;align-items:center;gap:6px;margin-bottom:8px;
+    color:#aaa;font-size:12px;flex-wrap:wrap}
+  .tat-mobile-col-picker select{background:#252525;border:1px solid #444;color:#ddd;
+    padding:4px 6px;border-radius:4px;font-size:12px}
 }
 `;
         document.head.appendChild(style);
@@ -911,6 +928,12 @@
             });
         }
 
+        const ALL_COLS = {
+            bs: { key: "bs", label: "BS" },
+            hours_online: { key: "hours_online", label: "On" },
+            pct_online: { key: "pct_online", label: "%" },
+        };
+
         function render() {
             const lbs = leftBsMap || new Map();
             const rbs = rightBsMap || new Map();
@@ -919,10 +942,21 @@
             const sortedR = hasRight ? sortData(rightData, rbs) : [];
             const maxRows = Math.max(sortedL.length, sortedR.length);
 
+            const isMobile = window.innerWidth <= 768;
+            let mobileCol = GM_getValue(STORAGE_KEYS.compareMobileCol) || (hasBs ? "bs" : "pct_online");
+            if (mobileCol === "bs" && !hasBs) mobileCol = "pct_online";
+
             const cols = [{ key: "name", label: "Name", align: "left" }];
-            if (hasBs) cols.push({ key: "bs", label: "BS" });
-            cols.push({ key: "hours_online", label: "On" });
-            cols.push({ key: "pct_online", label: "%" });
+            if (isMobile) {
+                cols.push(ALL_COLS[mobileCol]);
+            } else {
+                if (hasBs) cols.push(ALL_COLS.bs);
+                cols.push(ALL_COLS.hours_online);
+                cols.push(ALL_COLS.pct_online);
+            }
+
+            // Keep the sort column in sync with what's visible on mobile
+            if (isMobile && sortCol !== "name" && sortCol !== mobileCol) sortCol = mobileCol;
 
             function thRow(side) {
                 let h = "";
@@ -933,19 +967,28 @@
                 return h;
             }
 
-            function memberCells(m, bsMap, side, selected) {
-                if (!m) {
-                    const span = hasBs ? 4 : 3;
-                    return `<td colspan="${span}"></td>`;
+            function cellFor(m, bsMap, key, bgStyle, side) {
+                if (key === "name") {
+                    return `<td style="${bgStyle}text-align:left;color:#ccc;max-width:120px;overflow:hidden;text-overflow:ellipsis" class="tat-cmp-name" data-uid="${m.user_id}" data-name="${m.name || m.user_id}" data-side="${side}">${m.name || m.user_id}</td>`;
                 }
+                if (key === "bs") {
+                    const bs = bsMap.get(m.user_id);
+                    return `<td style="${bgStyle}color:#ffb74d;font-size:11px">${bs?.bs || "—"}</td>`;
+                }
+                if (key === "hours_online") {
+                    return `<td style="${bgStyle}">${m.hours_online}h</td>`;
+                }
+                if (key === "pct_online") {
+                    return `<td style="${bgStyle}color:${m.pct_online > 50 ? "#4caf50" : "#ccc"}">${m.pct_online}%</td>`;
+                }
+                return `<td style="${bgStyle}"></td>`;
+            }
+
+            function memberCells(m, bsMap, side, selected) {
+                if (!m) return `<td colspan="${cols.length}"></td>`;
                 const bg = selected === m.user_id ? (side === "left" ? "#1a4a5a" : "#5a1a2a") : "";
                 const bgStyle = bg ? `background:${bg};` : "";
-                const bs = bsMap.get(m.user_id);
-                const bsCell = hasBs ? `<td style="${bgStyle}color:#ffb74d;font-size:11px">${bs?.bs || "—"}</td>` : "";
-                return `<td style="${bgStyle}text-align:left;color:#ccc;max-width:120px;overflow:hidden;text-overflow:ellipsis" class="tat-cmp-name" data-uid="${m.user_id}" data-name="${m.name || m.user_id}" data-side="${side}">${m.name || m.user_id}</td>
-                    ${bsCell}
-                    <td style="${bgStyle}">${m.hours_online}h</td>
-                    <td style="${bgStyle}color:${m.pct_online > 50 ? "#4caf50" : "#ccc"}">${m.pct_online}%</td>`;
+                return cols.map((c) => cellFor(m, bsMap, c.key, bgStyle, side)).join("");
             }
 
             const selL = container._selLeft;
@@ -1120,10 +1163,30 @@
                 hintHTML = `<div style="color:#888;font-size:12px;margin-bottom:12px">Click a member name to view their heatmap. Select an opponent above to compare factions side-by-side.</div>`;
             }
 
-            container.innerHTML = `${summaryHTML}${hintHTML}<div id="tat-cmp-tables"></div>`;
+            const currentMobileCol = GM_getValue(STORAGE_KEYS.compareMobileCol)
+                || (GM_getValue(STORAGE_KEYS.ffscouterKey) ? "bs" : "pct_online");
+            const mobileColPickerHTML = `
+                <div class="tat-mobile-col-picker">
+                    <label>Show: Name +</label>
+                    <select id="tat-cmp-mobile-col">
+                        <option value="bs"${currentMobileCol === "bs" ? " selected" : ""}>BS</option>
+                        <option value="hours_online"${currentMobileCol === "hours_online" ? " selected" : ""}>Online hours</option>
+                        <option value="pct_online"${currentMobileCol === "pct_online" ? " selected" : ""}>Online %</option>
+                    </select>
+                </div>`;
+
+            container.innerHTML = `${summaryHTML}${hintHTML}${mobileColPickerHTML}<div id="tat-cmp-tables"></div>`;
 
             const tablesContainer = document.getElementById("tat-cmp-tables");
             renderCompareTables(leftData, rightData, tablesContainer, null, null);
+
+            const mobileColSel = document.getElementById("tat-cmp-mobile-col");
+            if (mobileColSel) {
+                mobileColSel.addEventListener("change", () => {
+                    GM_setValue(STORAGE_KEYS.compareMobileCol, mobileColSel.value);
+                    if (tablesContainer._render) tablesContainer._render();
+                });
+            }
 
             // Fetch battle stats from FFScouter (if key set)
             if (GM_getValue(STORAGE_KEYS.ffscouterKey)) {
@@ -1237,8 +1300,8 @@
             ? `User Comparison: ${leftUser.name} vs ${rightUser.name}`
             : `Activity: ${(leftUser || rightUser).name}`;
         const heatmaps = [
-            leftUser ? `<div style="margin-bottom:16px">${userHeatmapHTML(leftUser.name, "#4fc3f7", leftMap)}</div>` : "",
-            rightUser ? `<div>${userHeatmapHTML(rightUser.name, "#ef5350", rightMap)}</div>` : "",
+            leftUser ? `<div class="tat-grid-wrap" style="margin-bottom:16px">${userHeatmapHTML(leftUser.name, "#4fc3f7", leftMap)}</div>` : "",
+            rightUser ? `<div class="tat-grid-wrap">${userHeatmapHTML(rightUser.name, "#ef5350", rightMap)}</div>` : "",
         ].join("");
 
         container.innerHTML = `
@@ -1276,10 +1339,12 @@
 
                 <div style="margin-top:12px;padding-top:12px;border-top:1px solid #333">
                     <div style="color:#ccc;font-size:13px;margin-bottom:8px">Add faction:</div>
-                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                        <select id="tat-wl-candidates" style="background:#252525;border:1px solid #444;color:#ddd;padding:6px 8px;border-radius:4px;font-size:13px;flex:1;min-width:200px">
-                            <option value="">Select from candidates...</option>
-                        </select>
+                    <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+                        <div class="tat-combobox" style="flex:1;min-width:200px">
+                            <input type="text" id="tat-wl-candidates-search" placeholder="Search candidates by name or ID..." autocomplete="off"
+                                style="background:#252525;border:1px solid #444;color:#ddd;padding:6px 8px;border-radius:4px;font-size:13px;width:100%">
+                            <div id="tat-wl-candidates-list" class="tat-combobox-list" style="display:none"></div>
+                        </div>
                         <button class="tat-btn tat-btn-primary" id="tat-wl-add-candidate" style="padding:6px 14px;font-size:13px">Add</button>
                     </div>
                     <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
@@ -1419,11 +1484,32 @@
             renderContent();
         });
 
-        // Add from candidate dropdown
+        // Combobox search for candidate factions
+        selectedCandidateId = null;
+        const candSearch = document.getElementById("tat-wl-candidates-search");
+        const candList = document.getElementById("tat-wl-candidates-list");
+        candSearch.addEventListener("focus", () => { candList.style.display = "block"; renderCandidateList(); });
+        candSearch.addEventListener("input", () => {
+            candList.style.display = "block";
+            selectedCandidateId = null;
+            renderCandidateList();
+        });
+        candSearch.addEventListener("blur", () => { setTimeout(() => { candList.style.display = "none"; }, 200); });
+        candList.addEventListener("click", (e) => {
+            const item = e.target.closest("[data-fid]");
+            if (!item) return;
+            selectedCandidateId = Number(item.dataset.fid);
+            candSearch.value = item.dataset.label;
+            candList.style.display = "none";
+        });
+
+        // Add from candidate combobox
         document.getElementById("tat-wl-add-candidate").addEventListener("click", async () => {
-            const fid = Number(document.getElementById("tat-wl-candidates").value);
-            if (!fid) return;
-            await addToWatchlist(fid);
+            if (!selectedCandidateId) {
+                document.getElementById("tat-wl-status").innerHTML = `<span style="color:#ef5350">Pick a candidate from the list first.</span>`;
+                return;
+            }
+            await addToWatchlist(selectedCandidateId);
         });
 
         // Add manual faction ID
@@ -1449,7 +1535,11 @@
         try {
             await backendRequest("POST", "/v1/watchlist", { faction_id: factionId });
             statusEl.innerHTML = `<span style="color:#4caf50">Added!</span>`;
-            document.getElementById("tat-wl-manual-id").value = "";
+            const manualInput = document.getElementById("tat-wl-manual-id");
+            if (manualInput) manualInput.value = "";
+            const candSearch = document.getElementById("tat-wl-candidates-search");
+            if (candSearch) candSearch.value = "";
+            selectedCandidateId = null;
             loadWatchlist();
             loadCandidates();
         } catch (err) {
@@ -1524,21 +1614,38 @@
         }
     }
 
+    let candidatesList = [];
+    let selectedCandidateId = null;
+
     async function loadCandidates() {
-        const sel = document.getElementById("tat-wl-candidates");
-        if (!sel) return;
-        const val = sel.value;
-        sel.innerHTML = `<option value="">Select from candidates...</option>`;
+        const search = document.getElementById("tat-wl-candidates-search");
+        if (!search) return;
         try {
-            const candidates = await backendRequest("GET", "/v1/watchlist/candidates");
-            for (const f of candidates) {
-                const opt = document.createElement("option");
-                opt.value = f.faction_id;
-                opt.textContent = `${f.name || "Faction"} (${f.faction_id})`;
-                sel.appendChild(opt);
-            }
-            if (val) sel.value = val;
-        } catch { /* ignore */ }
+            candidatesList = await backendRequest("GET", "/v1/watchlist/candidates") || [];
+        } catch {
+            candidatesList = [];
+        }
+        renderCandidateList();
+    }
+
+    function renderCandidateList() {
+        const list = document.getElementById("tat-wl-candidates-list");
+        const search = document.getElementById("tat-wl-candidates-search");
+        if (!list || !search) return;
+        const q = search.value.trim().toLowerCase();
+        const filtered = candidatesList.filter((f) => {
+            if (!q) return true;
+            const name = (f.name || "").toLowerCase();
+            return name.includes(q) || String(f.faction_id).includes(q);
+        });
+        if (filtered.length === 0) {
+            list.innerHTML = `<div style="padding:8px 10px;color:#666;font-size:12px">${candidatesList.length === 0 ? "No candidates available." : "No matches."}</div>`;
+            return;
+        }
+        list.innerHTML = filtered.slice(0, 100).map((f) => {
+            const label = `${f.name || "Faction"} (${f.faction_id})`;
+            return `<div class="tat-combo-item" data-fid="${f.faction_id}" data-label="${label.replace(/"/g, "&quot;")}">${label}</div>`;
+        }).join("");
     }
 
     // ── Admin tab ────────────────────────────────────────────
