@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.1
+// @version      2.4.2
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.1";
+    const VERSION = "2.4.2";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col" };
 
@@ -1978,6 +1978,12 @@
             return btn;
         }
 
+        // Legacy standalone-button IDs from pre-shared-menu versions.
+        // If a user has a mixed install (one script new, one old), the old
+        // script creates its own button under one of these IDs. Nuke them
+        // so the shared menu stays authoritative. Safe to add new IDs here.
+        const LEGACY_BUTTON_IDS = ["tat-footer-btn", "spa-footer-btn"];
+
         function render() {
             const refBtn = findRefBtn();
             if (!refBtn) return false;
@@ -1985,6 +1991,10 @@
 
             const parent = refBtn.parentNode;
             parent.querySelectorAll('[data-eug]').forEach((el) => el.remove());
+            LEGACY_BUTTON_IDS.forEach((id) => {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            });
             const oldRow = getRow();
             if (oldRow) oldRow.remove();
 
