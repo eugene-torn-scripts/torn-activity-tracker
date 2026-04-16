@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.2
+// @version      2.4.3
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -9,6 +9,7 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      torn-tat.duckdns.org
 // @connect      ffscouter.com
 // @connect      *
@@ -40,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.2";
+    const VERSION = "2.4.3";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col" };
 
@@ -1868,9 +1869,13 @@
     // ═══════════════════════════════════════════════════════════
 
     (function setupEugFooterMenu() {
-        if (window.__eugFooterMenuLoaded) return;
-        window.__eugFooterMenuLoaded = true;
-        window.__eugeneScripts = window.__eugeneScripts || [];
+        // Use the page's real window so scripts in different @grant sandboxes
+        // share the same registry. SPA (@grant none) and TAT (@grant GM_*)
+        // otherwise see isolated `window` objects and can't find each other.
+        const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
+        if (W.__eugFooterMenuLoaded) return;
+        W.__eugFooterMenuLoaded = true;
+        W.__eugeneScripts = W.__eugeneScripts || [];
 
         const ROW_ID = "eug-footer-row";
 
@@ -1998,7 +2003,7 @@
             const oldRow = getRow();
             if (oldRow) oldRow.remove();
 
-            const scripts = window.__eugeneScripts || [];
+            const scripts = W.__eugeneScripts || [];
             if (scripts.length === 0) return true;
 
             if (scripts.length === 1) {
@@ -2022,7 +2027,7 @@
             setTimeout(() => obs.disconnect(), 30000);
         }
 
-        window.addEventListener("eugene-scripts-updated", render);
+        W.addEventListener("eugene-scripts-updated", render);
         document.addEventListener("click", (e) => {
             const row = getRow();
             if (!row || !row.classList.contains("eug-open")) return;
@@ -2032,17 +2037,17 @@
             closeRow();
         });
         document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRow(); });
-        window.addEventListener("scroll", closeRow, { passive: true });
-        window.addEventListener("resize", closeRow);
+        W.addEventListener("scroll", closeRow, { passive: true });
+        W.addEventListener("resize", closeRow);
 
-        window.registerEugeneScript = function (entry) {
-            const list = window.__eugeneScripts;
+        W.registerEugeneScript = function (entry) {
+            const list = W.__eugeneScripts;
             const i = list.findIndex((s) => s.id === entry.id);
             if (i >= 0) list[i] = entry;
             else list.push(entry);
-            window.dispatchEvent(new CustomEvent("eugene-scripts-updated"));
+            W.dispatchEvent(new CustomEvent("eugene-scripts-updated"));
         };
-        window.mountEugeneFooterMenu = mount;
+        W.mountEugeneFooterMenu = mount;
     })();
 
     // ═══════════════════════════════════════════════════════════
@@ -2050,7 +2055,8 @@
     // ═══════════════════════════════════════════════════════════
 
     function registerAndMount() {
-        window.registerEugeneScript({
+        const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
+        W.registerEugeneScript({
             id: "tat",
             name: "Torn Activity Tracker",
             color: "#8b2020",
@@ -2064,7 +2070,7 @@
             </svg>`,
             onClick: () => togglePanel(!panelOpen),
         });
-        window.mountEugeneFooterMenu();
+        W.mountEugeneFooterMenu();
     }
 
     if (document.readyState === "loading") {
