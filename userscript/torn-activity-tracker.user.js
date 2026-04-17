@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.8
+// @version      2.4.9
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.8";
+    const VERSION = "2.4.9";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
@@ -2110,10 +2110,21 @@
         }
 
         function mount() {
-            if (render()) return;
-            const obs = new MutationObserver(() => { if (render()) obs.disconnect(); });
+            render();
+            // Torn's SPA swaps the footer DOM on navigation, taking our buttons
+            // with it. Keep observing indefinitely and re-render whenever the
+            // ref button is back but our buttons are gone. Throttled via rAF.
+            let pending = false;
+            const obs = new MutationObserver(() => {
+                if (pending) return;
+                pending = true;
+                requestAnimationFrame(() => {
+                    pending = false;
+                    const refBtn = findRefBtn();
+                    if (refBtn && !refBtn.parentNode.querySelector('[data-eug]')) render();
+                });
+            });
             obs.observe(document.body, { childList: true, subtree: true });
-            setTimeout(() => obs.disconnect(), 30000);
         }
 
         W.addEventListener("eugene-scripts-updated", render);
