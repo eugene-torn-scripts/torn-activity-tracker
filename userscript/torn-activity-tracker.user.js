@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.5.2
+// @version      2.6.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,9 +41,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.5.2";
+    const VERSION = "2.6.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -338,14 +338,14 @@
 .tat-grid-controls select,.tat-grid-controls input{background:#252525;border:1px solid #444;color:#ddd;
   padding:5px 8px;border-radius:4px;font-size:13px}
 .tat-grid-controls label{color:#aaa;font-size:13px}
-.tat-grid-panels{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start}
-.tat-grid-panel{flex:1 1 0;min-width:0}
+.tat-grid-panels{display:flex;flex-direction:column;gap:16px;align-items:stretch}
+.tat-grid-panel{min-width:0}
 .tat-grid-panel-title{color:#ddd;font-size:13px;font-weight:600;margin:0 0 6px;padding:6px 10px;
   background:#252525;border:1px solid #333;border-radius:4px;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
-.tat-grid.tat-grid-compact td.tat-cell{min-width:14px;padding:2px;font-size:0;color:transparent}
-.tat-grid.tat-grid-compact .tat-day-label{min-width:60px;font-size:11px;padding:2px 4px}
-.tat-grid.tat-grid-compact th{padding:2px;font-size:10px}
+.tat-grid.tat-grid-split td.tat-cell{color:transparent;font-size:0;padding:0;min-width:28px;height:22px}
+.tat-grid .tat-cell-hl{box-shadow:inset 0 0 0 2px #fff;position:relative;z-index:2}
+.tat-grid th.tat-col-hl,.tat-grid td.tat-row-hl{box-shadow:inset 0 0 0 2px #fff}
 
 /* Compare layout */
 .tat-cmp-name{cursor:pointer}
@@ -629,6 +629,7 @@
         const includeIdleInit = GM_getValue(STORAGE_KEYS.hourGridIncludeIdle, false) ? "checked" : "";
         const metricInit = GM_getValue(STORAGE_KEYS.hourGridMetric, "pct");
         const cmpInit = GM_getValue(STORAGE_KEYS.hourGridCompareFaction, "");
+        const viewInit = GM_getValue(STORAGE_KEYS.hourGridCompareView, "stacked");
         el.innerHTML = `
             <div class="tat-grid-controls">
                 <label>Faction:</label>
@@ -638,6 +639,11 @@
                 <label>Compare:</label>
                 <select id="tat-grid-faction-cmp">
                     <option value="">— none —</option>
+                </select>
+                <label id="tat-grid-view-lbl" style="display:none">View:</label>
+                <select id="tat-grid-view" style="display:none">
+                    <option value="stacked"${viewInit === "stacked" ? " selected" : ""}>Stacked</option>
+                    <option value="split"${viewInit === "split" ? " selected" : ""}>Split</option>
                 </select>
                 <label>Days:</label>
                 <select id="tat-grid-days">
@@ -706,10 +712,24 @@
             fetchAndRenderGrid(primary, compare, days, labelA, labelB);
         };
 
+        const updateViewToggleVisibility = () => {
+            const cmpOn = !!document.getElementById("tat-grid-faction-cmp").value;
+            const lbl = document.getElementById("tat-grid-view-lbl");
+            const sel = document.getElementById("tat-grid-view");
+            lbl.style.display = cmpOn ? "" : "none";
+            sel.style.display = cmpOn ? "" : "none";
+        };
+        updateViewToggleVisibility();
+
         document.getElementById("tat-grid-faction").addEventListener("change", loadGrid);
         document.getElementById("tat-grid-faction-cmp").addEventListener("change", (e) => {
             GM_setValue(STORAGE_KEYS.hourGridCompareFaction, e.target.value);
+            updateViewToggleVisibility();
             loadGrid();
+        });
+        document.getElementById("tat-grid-view").addEventListener("change", (e) => {
+            GM_setValue(STORAGE_KEYS.hourGridCompareView, e.target.value);
+            renderAllHourlyGrids();
         });
         document.getElementById("tat-grid-days").addEventListener("change", loadGrid);
         document.getElementById("tat-grid-metric").addEventListener("change", (e) => {
@@ -722,12 +742,11 @@
         });
         document.getElementById("tat-export-hourly").addEventListener("click", () => {
             if (!lastHourlyData || lastHourlyData.length === 0) return;
-            const headers = ["date_utc", "hour_utc", "total_members", "online", "idle", "offline", "pct_online", "pct_online_or_idle"];
-            const rows = lastHourlyData.map((r) => {
+            const buildRows = (fid, rows) => rows.map((r) => {
                 const d = new Date(r.hour);
                 const total = r.total_members;
                 const pctOnlineOrIdle = total > 0 ? Math.round(((r.online + r.idle) / total) * 100) : 0;
-                return [
+                const base = [
                     d.toISOString().slice(0, 10),
                     d.getUTCHours(),
                     total, r.online, r.idle,
@@ -735,8 +754,19 @@
                     r.pct_online,
                     pctOnlineOrIdle,
                 ];
+                return fid == null ? base : [fid, ...base];
             });
-            downloadCSV(`activity-hourly-${lastHourlyFaction}.csv`, headers, rows);
+            if (lastHourlyFactionCmp && lastHourlyDataCmp && lastHourlyDataCmp.length) {
+                const headers = ["faction_id", "date_utc", "hour_utc", "total_members", "online", "idle", "offline", "pct_online", "pct_online_or_idle"];
+                const rows = [
+                    ...buildRows(lastHourlyFaction, lastHourlyData),
+                    ...buildRows(lastHourlyFactionCmp, lastHourlyDataCmp),
+                ];
+                downloadCSV(`activity-hourly-${lastHourlyFaction}-vs-${lastHourlyFactionCmp}.csv`, headers, rows);
+            } else {
+                const headers = ["date_utc", "hour_utc", "total_members", "online", "idle", "offline", "pct_online", "pct_online_or_idle"];
+                downloadCSV(`activity-hourly-${lastHourlyFaction}.csv`, headers, buildRows(null, lastHourlyData));
+            }
         });
         loadGrid();
     }
@@ -782,8 +812,14 @@
     function renderAllHourlyGrids() {
         const container = document.getElementById("tat-grid-container");
         if (!container) return;
-        const compact = !!lastHourlyDataCmp;
-        if (compact) {
+        const hasCompare = !!lastHourlyDataCmp;
+        const view = document.getElementById("tat-grid-view")?.value || "stacked";
+
+        if (hasCompare && view === "split") {
+            container.className = "tat-grid-wrap";
+            container.innerHTML = "";
+            renderSplitGridInto(container, lastHourlyData, lastHourlyDataCmp);
+        } else if (hasCompare) {
             container.className = "";
             container.innerHTML = `
                 <div class="tat-grid-panels">
@@ -797,24 +833,16 @@
                     </div>
                 </div>
             `;
-            renderHourlyGridInto(document.getElementById("tat-grid-pane-a"), lastHourlyData, true);
-            renderHourlyGridInto(document.getElementById("tat-grid-pane-b"), lastHourlyDataCmp, true);
+            renderHourlyGridInto(document.getElementById("tat-grid-pane-a"), lastHourlyData);
+            renderHourlyGridInto(document.getElementById("tat-grid-pane-b"), lastHourlyDataCmp);
         } else {
             container.className = "tat-grid-wrap";
-            renderHourlyGridInto(container, lastHourlyData, false);
+            renderHourlyGridInto(container, lastHourlyData);
         }
     }
 
-    function renderHourlyGridInto(paneEl, data, compact) {
-        if (!paneEl) return;
-        if (!data || data.length === 0) {
-            paneEl.innerHTML = `<div class="tat-status">No data.</div>`;
-            return;
-        }
-        const includeIdle = !!document.getElementById("tat-grid-include-idle")?.checked;
-        const metric = document.getElementById("tat-grid-metric")?.value || "pct";
-
-        // Group data by date (YYYY-MM-DD) → hour (0-23)
+    // Group hourly rows into { dayKey -> [24 rows] } and return {byDay, sortedDays}
+    function groupHourlyByDay(data) {
         const byDay = new Map();
         for (const row of data) {
             const d = new Date(row.hour);
@@ -823,13 +851,29 @@
             if (!byDay.has(dateKey)) byDay.set(dateKey, new Array(24).fill(null));
             byDay.get(dateKey)[hour] = row;
         }
+        return { byDay, sortedDays: [...byDay.keys()].sort().reverse() };
+    }
 
-        // Sort dates descending (newest first)
-        const sortedDays = [...byDay.keys()].sort().reverse();
+    function rowStats(row, includeIdle) {
+        const total = row.total_members;
+        const activeCount = includeIdle ? row.online + row.idle : row.online;
+        const pct = includeIdle
+            ? (total > 0 ? Math.round((activeCount / total) * 100) : 0)
+            : row.pct_online;
+        return { total, activeCount, pct };
+    }
 
-        // Build table
-        const tableCls = compact ? "tat-grid tat-grid-compact" : "tat-grid";
-        let html = `<table class="${tableCls}"><thead><tr><th></th>`;
+    function renderHourlyGridInto(paneEl, data) {
+        if (!paneEl) return;
+        if (!data || data.length === 0) {
+            paneEl.innerHTML = `<div class="tat-status">No data.</div>`;
+            return;
+        }
+        const includeIdle = !!document.getElementById("tat-grid-include-idle")?.checked;
+        const metric = document.getElementById("tat-grid-metric")?.value || "pct";
+        const { byDay, sortedDays } = groupHourlyByDay(data);
+
+        let html = `<table class="tat-grid"><thead><tr><th></th>`;
         for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
         html += `</tr></thead><tbody>`;
 
@@ -844,11 +888,7 @@
                 if (!row) {
                     html += `<td class="tat-cell" style="background:#111;color:#444">-</td>`;
                 } else {
-                    const total = row.total_members;
-                    const activeCount = includeIdle ? row.online + row.idle : row.online;
-                    const pct = includeIdle
-                        ? (total > 0 ? Math.round((activeCount / total) * 100) : 0)
-                        : row.pct_online;
+                    const { total, activeCount, pct } = rowStats(row, includeIdle);
                     const bg = heatColor(pct);
                     const textColor = pct > 50 ? "#111" : "#ddd";
                     const label = includeIdle ? "online+idle" : "online";
@@ -866,6 +906,69 @@
         paneEl.innerHTML = html;
     }
 
+    function renderSplitGridInto(paneEl, dataA, dataB) {
+        if (!paneEl) return;
+        const includeIdle = !!document.getElementById("tat-grid-include-idle")?.checked;
+        const metric = document.getElementById("tat-grid-metric")?.value || "pct";
+        const gA = groupHourlyByDay(dataA || []);
+        const gB = groupHourlyByDay(dataB || []);
+        const allDays = [...new Set([...gA.sortedDays, ...gB.sortedDays])].sort().reverse();
+
+        let html = `<table class="tat-grid tat-grid-split"><thead><tr><th></th>`;
+        for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
+        html += `</tr></thead><tbody>`;
+
+        const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const missingBg = "#111";
+
+        for (const dateKey of allDays) {
+            const dow = dayNames[new Date(dateKey + "T00:00:00Z").getUTCDay()];
+            html += `<tr><td class="tat-day-label">${dow} ${dateKey.slice(5)}</td>`;
+            const hoursA = gA.byDay.get(dateKey) || new Array(24).fill(null);
+            const hoursB = gB.byDay.get(dateKey) || new Array(24).fill(null);
+            for (let h = 0; h < 24; h++) {
+                const rA = hoursA[h];
+                const rB = hoursB[h];
+                const sA = rA ? rowStats(rA, includeIdle) : null;
+                const sB = rB ? rowStats(rB, includeIdle) : null;
+                const bgA = sA ? heatColor(sA.pct) : missingBg;
+                const bgB = sB ? heatColorRed(sB.pct) : missingBg;
+                const valA = metric === "count" ? (sA ? sA.activeCount : "-") : (sA ? `${sA.pct}%` : "-");
+                const valB = metric === "count" ? (sB ? sB.activeCount : "-") : (sB ? `${sB.pct}%` : "-");
+                const title = `${valA}|${valB}`;
+                const bg = `linear-gradient(135deg, ${bgA} 0 50%, ${bgB} 50% 100%)`;
+                html += `<td class="tat-cell" style="background:${bg}" title="${title}"></td>`;
+            }
+            html += `</tr>`;
+        }
+
+        html += `</tbody></table>`;
+        paneEl.innerHTML = html;
+        attachHighlightListeners(paneEl.querySelector("table.tat-grid"));
+    }
+
+    function attachHighlightListeners(tableEl) {
+        if (!tableEl) return;
+        const headers = tableEl.querySelectorAll("thead tr th");
+        const toggle = (cell, on) => {
+            const row = cell.parentElement;
+            const colIdx = Array.prototype.indexOf.call(row.children, cell);
+            const dayLabel = row.querySelector(".tat-day-label");
+            const method = on ? "add" : "remove";
+            cell.classList[method]("tat-cell-hl");
+            if (dayLabel) dayLabel.classList[method]("tat-row-hl");
+            if (headers[colIdx]) headers[colIdx].classList[method]("tat-col-hl");
+        };
+        tableEl.addEventListener("mouseover", (e) => {
+            const cell = e.target.closest("td.tat-cell");
+            if (cell && tableEl.contains(cell)) toggle(cell, true);
+        });
+        tableEl.addEventListener("mouseout", (e) => {
+            const cell = e.target.closest("td.tat-cell");
+            if (cell && tableEl.contains(cell)) toggle(cell, false);
+        });
+    }
+
     function escapeHtml(s) {
         return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
     }
@@ -880,6 +983,17 @@
         if (pct <= 75) return "#4caf50";
         if (pct <= 90) return "#69f0ae";
         return "#a5d6a7";
+    }
+
+    function heatColorRed(pct) {
+        if (pct <= 0) return "#2e1a1a";
+        if (pct <= 15) return "#2e2020";
+        if (pct <= 30) return "#3a1f1f";
+        if (pct <= 45) return "#6e2222";
+        if (pct <= 60) return "#a83232";
+        if (pct <= 75) return "#d94b4b";
+        if (pct <= 90) return "#f08a8a";
+        return "#ffcdd2";
     }
 
     let lastSummaryData = null;
