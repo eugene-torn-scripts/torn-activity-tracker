@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.5.0
+// @version      2.5.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.5.0";
+    const VERSION = "2.5.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
@@ -344,6 +344,7 @@
   background:#252525;border:1px solid #333;border-radius:4px;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
 .tat-grid.tat-grid-compact td.tat-cell{min-width:14px;padding:2px;font-size:0;color:transparent}
+.tat-grid.tat-grid-compact.tat-grid-with-numbers td.tat-cell{min-width:20px;padding:2px 3px;font-size:9px}
 .tat-grid.tat-grid-compact .tat-day-label{min-width:60px;font-size:11px;padding:2px 4px}
 .tat-grid.tat-grid-compact th{padding:2px;font-size:10px}
 
@@ -828,7 +829,9 @@
         const sortedDays = [...byDay.keys()].sort().reverse();
 
         // Build table
-        const tableCls = compact ? "tat-grid tat-grid-compact" : "tat-grid";
+        const tableCls = compact
+            ? (metric === "count" ? "tat-grid tat-grid-compact tat-grid-with-numbers" : "tat-grid tat-grid-compact")
+            : "tat-grid";
         let html = `<table class="${tableCls}"><thead><tr><th></th>`;
         for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
         html += `</tr></thead><tbody>`;
@@ -842,7 +845,7 @@
             for (let h = 0; h < 24; h++) {
                 const row = hours[h];
                 if (!row) {
-                    html += `<td class="tat-cell" style="background:#111;color:#444">${compact ? "" : "-"}</td>`;
+                    html += `<td class="tat-cell" style="background:#111;color:#444">-</td>`;
                 } else {
                     const total = row.total_members;
                     const activeCount = includeIdle ? row.online + row.idle : row.online;
@@ -854,7 +857,7 @@
                     const title = includeIdle
                         ? `${pct}% online+idle (${row.online} online + ${row.idle} idle / ${total})`
                         : `${pct}% online (${row.online}/${total})`;
-                    const display = compact ? "" : (metric === "count" ? String(activeCount) : String(pct));
+                    const display = metric === "count" ? String(activeCount) : String(pct);
                     html += `<td class="tat-cell" style="background:${bg};color:${textColor}" title="${title}">${display}</td>`;
                 }
             }
