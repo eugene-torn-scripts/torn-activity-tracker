@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.4.9
+// @version      2.5.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,9 +41,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.4.9";
+    const VERSION = "2.5.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -338,6 +338,14 @@
 .tat-grid-controls select,.tat-grid-controls input{background:#252525;border:1px solid #444;color:#ddd;
   padding:5px 8px;border-radius:4px;font-size:13px}
 .tat-grid-controls label{color:#aaa;font-size:13px}
+.tat-grid-panels{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start}
+.tat-grid-panel{flex:1 1 0;min-width:0}
+.tat-grid-panel-title{color:#ddd;font-size:13px;font-weight:600;margin:0 0 6px;padding:6px 10px;
+  background:#252525;border:1px solid #333;border-radius:4px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.tat-grid.tat-grid-compact td.tat-cell{min-width:14px;padding:2px;font-size:0;color:transparent}
+.tat-grid.tat-grid-compact .tat-day-label{min-width:60px;font-size:11px;padding:2px 4px}
+.tat-grid.tat-grid-compact th{padding:2px;font-size:10px}
 
 /* Compare layout */
 .tat-cmp-name{cursor:pointer}
@@ -602,9 +610,13 @@
         URL.revokeObjectURL(url);
     }
 
-    // Store last-fetched data for CSV export
+    // Store last-fetched data for CSV export and re-render on toggle
     let lastHourlyData = null;
     let lastHourlyFaction = null;
+    let lastHourlyLabel = null;
+    let lastHourlyDataCmp = null;
+    let lastHourlyFactionCmp = null;
+    let lastHourlyLabelCmp = null;
 
     async function renderHourGrid(el) {
         const userInfo = GM_getValue(STORAGE_KEYS.userInfo) || {};
@@ -615,11 +627,17 @@
         }
 
         const includeIdleInit = GM_getValue(STORAGE_KEYS.hourGridIncludeIdle, false) ? "checked" : "";
+        const metricInit = GM_getValue(STORAGE_KEYS.hourGridMetric, "pct");
+        const cmpInit = GM_getValue(STORAGE_KEYS.hourGridCompareFaction, "");
         el.innerHTML = `
             <div class="tat-grid-controls">
                 <label>Faction:</label>
                 <select id="tat-grid-faction">
                     <option value="${factionId}">My faction (${factionId})</option>
+                </select>
+                <label>Compare:</label>
+                <select id="tat-grid-faction-cmp">
+                    <option value="">— none —</option>
                 </select>
                 <label>Days:</label>
                 <select id="tat-grid-days">
@@ -627,6 +645,11 @@
                     <option value="7" selected>7</option>
                     <option value="14">14</option>
                     <option value="30">30</option>
+                </select>
+                <label>Show:</label>
+                <select id="tat-grid-metric">
+                    <option value="pct"${metricInit === "pct" ? " selected" : ""}>Percentage</option>
+                    <option value="count"${metricInit === "count" ? " selected" : ""}>Users</option>
                 </select>
                 <label style="margin-left:8px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" title="Include idle members in the heatmap percentage">
                     <input type="checkbox" id="tat-grid-include-idle" ${includeIdleInit}>
@@ -643,32 +666,59 @@
                 <span style="margin-left:12px;color:#666">All times TCT (UTC)</span>
                 <button class="tat-btn tat-btn-export" id="tat-export-hourly" style="margin-left:auto" disabled>Export CSV</button>
             </div>
-            <div id="tat-grid-container" class="tat-grid-wrap"><div class="tat-status">Loading activity data...</div></div>
+            <div id="tat-grid-container"><div class="tat-status">Loading activity data...</div></div>
         `;
 
-        // Populate watchlist factions into dropdown
+        const labelById = new Map();
+        labelById.set(String(factionId), `My faction (${factionId})`);
+
+        // Populate watchlist factions into dropdowns
         try {
             const watchlist = await fetchWatchlistCached();
-            const sel = document.getElementById("tat-grid-faction");
+            const selA = document.getElementById("tat-grid-faction");
+            const selB = document.getElementById("tat-grid-faction-cmp");
             for (const f of watchlist) {
-                const opt = document.createElement("option");
-                opt.value = f.faction_id;
-                opt.textContent = `${f.name || "Faction"} (${f.faction_id})`;
-                sel.appendChild(opt);
+                const label = `${f.name || "Faction"} (${f.faction_id})`;
+                labelById.set(String(f.faction_id), label);
+                const optA = document.createElement("option");
+                optA.value = f.faction_id;
+                optA.textContent = label;
+                selA.appendChild(optA);
+                const optB = document.createElement("option");
+                optB.value = f.faction_id;
+                optB.textContent = label;
+                selB.appendChild(optB);
+            }
+            if (cmpInit && selB.querySelector(`option[value="${cmpInit}"]`)) {
+                selB.value = cmpInit;
             }
         } catch { /* ignore */ }
 
         const loadGrid = () => {
-            const selFaction = Number(document.getElementById("tat-grid-faction").value);
-            const selDays = Number(document.getElementById("tat-grid-days").value);
-            fetchAndRenderGrid(selFaction, selDays);
+            const selA = document.getElementById("tat-grid-faction");
+            const selB = document.getElementById("tat-grid-faction-cmp");
+            const primary = Number(selA.value);
+            const cmpRaw = selB.value;
+            const compare = cmpRaw ? Number(cmpRaw) : null;
+            const days = Number(document.getElementById("tat-grid-days").value);
+            const labelA = labelById.get(String(primary)) || `Faction ${primary}`;
+            const labelB = compare ? (labelById.get(String(compare)) || `Faction ${compare}`) : null;
+            fetchAndRenderGrid(primary, compare, days, labelA, labelB);
         };
 
         document.getElementById("tat-grid-faction").addEventListener("change", loadGrid);
+        document.getElementById("tat-grid-faction-cmp").addEventListener("change", (e) => {
+            GM_setValue(STORAGE_KEYS.hourGridCompareFaction, e.target.value);
+            loadGrid();
+        });
         document.getElementById("tat-grid-days").addEventListener("change", loadGrid);
+        document.getElementById("tat-grid-metric").addEventListener("change", (e) => {
+            GM_setValue(STORAGE_KEYS.hourGridMetric, e.target.value);
+            renderAllHourlyGrids();
+        });
         document.getElementById("tat-grid-include-idle").addEventListener("change", (e) => {
             GM_setValue(STORAGE_KEYS.hourGridIncludeIdle, e.target.checked);
-            if (lastHourlyData) renderHourlyGrid(lastHourlyData);
+            renderAllHourlyGrids();
         });
         document.getElementById("tat-export-hourly").addEventListener("click", () => {
             if (!lastHourlyData || lastHourlyData.length === 0) return;
@@ -691,37 +741,78 @@
         loadGrid();
     }
 
-    async function fetchAndRenderGrid(factionId, days) {
+    async function fetchAndRenderGrid(factionId, compareId, days, labelA, labelB) {
         const container = document.getElementById("tat-grid-container");
         const exportBtn = document.getElementById("tat-export-hourly");
         if (!container) return;
         container.innerHTML = `<div class="tat-status">Loading...</div>`;
         if (exportBtn) exportBtn.disabled = true;
         lastHourlyData = null;
+        lastHourlyDataCmp = null;
         lastHourlyFaction = factionId;
+        lastHourlyFactionCmp = compareId;
+        lastHourlyLabel = labelA;
+        lastHourlyLabelCmp = labelB;
 
-        let data;
+        const fetchOne = (id) => backendRequest("GET", `/v1/activity/hourly?faction=${id}&days=${days}`);
+
+        let dataA, dataB;
         try {
-            data = await backendRequest("GET", `/v1/activity/hourly?faction=${factionId}&days=${days}`);
+            if (compareId) {
+                [dataA, dataB] = await Promise.all([fetchOne(factionId), fetchOne(compareId)]);
+            } else {
+                dataA = await fetchOne(factionId);
+            }
         } catch (err) {
             container.innerHTML = `<div class="tat-status" style="color:#ef5350">Failed to load: ${err.error || err.status}</div>`;
             return;
         }
 
-        if (!data || data.length === 0) {
+        if ((!dataA || dataA.length === 0) && (!dataB || dataB.length === 0)) {
             container.innerHTML = `<div class="tat-status">No activity data yet. The tracker polls every 30 minutes — check back soon.</div>`;
             return;
         }
 
-        lastHourlyData = data;
-        if (exportBtn) exportBtn.disabled = false;
-        renderHourlyGrid(data);
+        lastHourlyData = dataA || [];
+        lastHourlyDataCmp = dataB || null;
+        if (exportBtn) exportBtn.disabled = !(lastHourlyData && lastHourlyData.length);
+        renderAllHourlyGrids();
     }
 
-    function renderHourlyGrid(data) {
+    function renderAllHourlyGrids() {
         const container = document.getElementById("tat-grid-container");
         if (!container) return;
+        const compact = !!lastHourlyDataCmp;
+        if (compact) {
+            container.className = "";
+            container.innerHTML = `
+                <div class="tat-grid-panels">
+                    <div class="tat-grid-panel">
+                        <div class="tat-grid-panel-title" title="${escapeAttr(lastHourlyLabel || "")}">${escapeHtml(lastHourlyLabel || "")}</div>
+                        <div id="tat-grid-pane-a" class="tat-grid-wrap"></div>
+                    </div>
+                    <div class="tat-grid-panel">
+                        <div class="tat-grid-panel-title" title="${escapeAttr(lastHourlyLabelCmp || "")}">${escapeHtml(lastHourlyLabelCmp || "")}</div>
+                        <div id="tat-grid-pane-b" class="tat-grid-wrap"></div>
+                    </div>
+                </div>
+            `;
+            renderHourlyGridInto(document.getElementById("tat-grid-pane-a"), lastHourlyData, true);
+            renderHourlyGridInto(document.getElementById("tat-grid-pane-b"), lastHourlyDataCmp, true);
+        } else {
+            container.className = "tat-grid-wrap";
+            renderHourlyGridInto(container, lastHourlyData, false);
+        }
+    }
+
+    function renderHourlyGridInto(paneEl, data, compact) {
+        if (!paneEl) return;
+        if (!data || data.length === 0) {
+            paneEl.innerHTML = `<div class="tat-status">No data.</div>`;
+            return;
+        }
         const includeIdle = !!document.getElementById("tat-grid-include-idle")?.checked;
+        const metric = document.getElementById("tat-grid-metric")?.value || "pct";
 
         // Group data by date (YYYY-MM-DD) → hour (0-23)
         const byDay = new Map();
@@ -737,7 +828,8 @@
         const sortedDays = [...byDay.keys()].sort().reverse();
 
         // Build table
-        let html = `<table class="tat-grid"><thead><tr><th></th>`;
+        const tableCls = compact ? "tat-grid tat-grid-compact" : "tat-grid";
+        let html = `<table class="${tableCls}"><thead><tr><th></th>`;
         for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
         html += `</tr></thead><tbody>`;
 
@@ -750,26 +842,33 @@
             for (let h = 0; h < 24; h++) {
                 const row = hours[h];
                 if (!row) {
-                    html += `<td class="tat-cell" style="background:#111;color:#444">-</td>`;
+                    html += `<td class="tat-cell" style="background:#111;color:#444">${compact ? "" : "-"}</td>`;
                 } else {
                     const total = row.total_members;
+                    const activeCount = includeIdle ? row.online + row.idle : row.online;
                     const pct = includeIdle
-                        ? (total > 0 ? Math.round(((row.online + row.idle) / total) * 100) : 0)
+                        ? (total > 0 ? Math.round((activeCount / total) * 100) : 0)
                         : row.pct_online;
                     const bg = heatColor(pct);
                     const textColor = pct > 50 ? "#111" : "#ddd";
                     const title = includeIdle
                         ? `${pct}% online+idle (${row.online} online + ${row.idle} idle / ${total})`
                         : `${pct}% online (${row.online}/${total})`;
-                    html += `<td class="tat-cell" style="background:${bg};color:${textColor}" title="${title}">${pct}</td>`;
+                    const display = compact ? "" : (metric === "count" ? String(activeCount) : String(pct));
+                    html += `<td class="tat-cell" style="background:${bg};color:${textColor}" title="${title}">${display}</td>`;
                 }
             }
             html += `</tr>`;
         }
 
         html += `</tbody></table>`;
-        container.innerHTML = html;
+        paneEl.innerHTML = html;
     }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+    }
+    function escapeAttr(s) { return escapeHtml(s); }
 
     function heatColor(pct) {
         if (pct <= 0) return "#1a1a2e";
