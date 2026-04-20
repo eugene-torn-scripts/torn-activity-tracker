@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.6.0
+// @version      2.6.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.6.0";
+    const VERSION = "2.6.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
@@ -663,12 +663,20 @@
                 </label>
             </div>
             <div class="tat-legend">
-                <span>Activity:</span>
+                <span id="tat-legend-label-a">Activity:</span>
                 <span class="tat-legend-box" style="background:#1a1a2e"></span> 0%
                 <span class="tat-legend-box" style="background:#1a3a2e"></span> 25%
                 <span class="tat-legend-box" style="background:#2e7d32"></span> 50%
                 <span class="tat-legend-box" style="background:#4caf50"></span> 75%
                 <span class="tat-legend-box" style="background:#69f0ae"></span> 100%
+                <span id="tat-legend-red" style="display:none;align-items:center;gap:4px;margin-left:12px">
+                    <span>Opposite:</span>
+                    <span class="tat-legend-box" style="background:#2e1a1a"></span> 0%
+                    <span class="tat-legend-box" style="background:#3a1f1f"></span> 25%
+                    <span class="tat-legend-box" style="background:#a83232"></span> 50%
+                    <span class="tat-legend-box" style="background:#d94b4b"></span> 75%
+                    <span class="tat-legend-box" style="background:#f08a8a"></span> 100%
+                </span>
                 <span style="margin-left:12px;color:#666">All times TCT (UTC)</span>
                 <button class="tat-btn tat-btn-export" id="tat-export-hourly" style="margin-left:auto" disabled>Export CSV</button>
             </div>
@@ -814,8 +822,14 @@
         if (!container) return;
         const hasCompare = !!lastHourlyDataCmp;
         const view = document.getElementById("tat-grid-view")?.value || "stacked";
+        const isSplit = hasCompare && view === "split";
 
-        if (hasCompare && view === "split") {
+        const redLegend = document.getElementById("tat-legend-red");
+        const labelA = document.getElementById("tat-legend-label-a");
+        if (redLegend) redLegend.style.display = isSplit ? "inline-flex" : "none";
+        if (labelA) labelA.textContent = isSplit ? "My faction:" : "Activity:";
+
+        if (isSplit) {
             container.className = "tat-grid-wrap";
             container.innerHTML = "";
             renderSplitGridInto(container, lastHourlyData, lastHourlyDataCmp);
