@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.6.1
+// @version      2.7.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.6.1";
+    const VERSION = "2.7.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
@@ -1298,13 +1298,14 @@
 
             function memberCells(m, bsMap, side, selected) {
                 if (!m) return `<td colspan="${cols.length}"></td>`;
-                const bg = selected === m.user_id ? (side === "left" ? "#1a4a5a" : "#5a1a2a") : "";
+                const isSel = selected && selected.has(m.user_id);
+                const bg = isSel ? (side === "left" ? "#1a4a5a" : "#5a1a2a") : "";
                 const bgStyle = bg ? `background:${bg};` : "";
                 return cols.map((c) => cellFor(m, bsMap, c.key, bgStyle, side)).join("");
             }
 
-            const selL = container._selLeft;
-            const selR = container._selRight;
+            const selL = container._selLeft instanceof Set ? container._selLeft : new Set();
+            const selR = container._selRight instanceof Set ? container._selRight : new Set();
 
             let html;
             if (hasRight) {
@@ -1463,7 +1464,7 @@
                             <div style="color:#aaa;font-size:12px;margin-top:2px">${rightData.length} members &middot; ${rOnline}h total</div>
                         </div>
                     </div>`;
-                hintHTML = `<div style="color:#888;font-size:12px;margin-bottom:12px">Click a member name to view their heatmap. Select one from each side to compare.</div>`;
+                hintHTML = `<div style="color:#888;font-size:12px;margin-bottom:12px">Click member names to view their heatmaps. Pick any number from either side; click again to deselect.</div>`;
             } else {
                 summaryHTML = `
                     <div style="margin-bottom:16px;text-align:center">
@@ -1472,7 +1473,7 @@
                             <div style="color:#aaa;font-size:12px;margin-top:2px">${leftData.length} members &middot; ${lOnline}h total</div>
                         </div>
                     </div>`;
-                hintHTML = `<div style="color:#888;font-size:12px;margin-bottom:12px">Click a member name to view their heatmap. Select an opponent above to compare factions side-by-side.</div>`;
+                hintHTML = `<div style="color:#888;font-size:12px;margin-bottom:12px">Click member names to view their heatmaps (multi-select supported). Select an opponent above to compare factions side-by-side.</div>`;
             }
 
             const currentMobileCol = GM_getValue(STORAGE_KEYS.compareMobileCol)
@@ -1516,8 +1517,12 @@
                 });
             }
 
-            // Per-user heatmap on name click — renders instantly for one side, compares when both selected
-            let selectedLeft = null, selectedRight = null;
+            // Per-user heatmaps on name click — multi-select on each side; click again to deselect.
+            // Maps preserve insertion order so heatmaps stack in the order the user picked them.
+            const selectedLeft = new Map();
+            const selectedRight = new Map();
+            tablesContainer._selLeft = new Set();
+            tablesContainer._selRight = new Set();
 
             tablesContainer.addEventListener("click", (e) => {
                 const nameCell = e.target.closest(".tat-cmp-name");
@@ -1526,37 +1531,42 @@
                 const name = nameCell.dataset.name;
                 const side = nameCell.dataset.side;
 
-                if (side === "left") {
-                    selectedLeft = { uid, name };
-                    tablesContainer._selLeft = uid;
+                const sel = side === "left" ? selectedLeft : selectedRight;
+                const selSet = side === "left" ? tablesContainer._selLeft : tablesContainer._selRight;
+                if (sel.has(uid)) {
+                    sel.delete(uid);
+                    selSet.delete(uid);
                 } else {
-                    selectedRight = { uid, name };
-                    tablesContainer._selRight = uid;
+                    sel.set(uid, { uid, name });
+                    selSet.add(uid);
                 }
                 if (tablesContainer._render) tablesContainer._render();
-                if (selectedLeft || selectedRight) loadUserCompare(selectedLeft, selectedRight, days);
+                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days);
             });
         }
 
         load();
     }
 
-    async function loadUserCompare(leftUser, rightUser, days) {
+    async function loadUserCompare(leftUsers, rightUsers, days) {
         const container = document.getElementById("tat-user-compare");
+        if (!leftUsers.length && !rightUsers.length) {
+            container.style.display = "none";
+            container.innerHTML = "";
+            return;
+        }
         container.style.display = "block";
 
-        const both = leftUser && rightUser;
-        const loadingLabel = both
-            ? `${leftUser.name} vs ${rightUser.name}`
-            : (leftUser || rightUser).name;
-        container.innerHTML = `<div class="tat-status" style="margin-top:16px">Loading heatmap${both ? "s" : ""} for ${loadingLabel}...</div>`;
+        const total = leftUsers.length + rightUsers.length;
+        container.innerHTML = `<div class="tat-status" style="margin-top:16px">Loading heatmap${total > 1 ? "s" : ""} for ${total} user${total > 1 ? "s" : ""}...</div>`;
 
-        let leftHours = null, rightHours = null;
+        const fetchHours = (uid) => backendRequest("GET", `/v1/activity/user-hourly?user=${uid}&days=${days}`);
+        let leftHoursList, rightHoursList;
         try {
-            const jobs = [];
-            if (leftUser) jobs.push(backendRequest("GET", `/v1/activity/user-hourly?user=${leftUser.uid}&days=${days}`).then((r) => { leftHours = r; }));
-            if (rightUser) jobs.push(backendRequest("GET", `/v1/activity/user-hourly?user=${rightUser.uid}&days=${days}`).then((r) => { rightHours = r; }));
-            await Promise.all(jobs);
+            [leftHoursList, rightHoursList] = await Promise.all([
+                Promise.all(leftUsers.map((u) => fetchHours(u.uid))),
+                Promise.all(rightUsers.map((u) => fetchHours(u.uid))),
+            ]);
         } catch (err) {
             container.innerHTML = `<div class="tat-status" style="color:#ef5350;margin-top:16px">Failed to load user data.</div>`;
             return;
@@ -1576,8 +1586,8 @@
             return m;
         };
 
-        const leftMap = leftHours ? buildMap(leftHours) : null;
-        const rightMap = rightHours ? buildMap(rightHours) : null;
+        const leftMaps = leftHoursList.map(buildMap);
+        const rightMaps = rightHoursList.map(buildMap);
         const sortedDates = [...allDates].sort().reverse();
         const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -1608,18 +1618,26 @@
             return html;
         }
 
-        const title = both
-            ? `User Comparison: ${leftUser.name} vs ${rightUser.name}`
-            : `Activity: ${(leftUser || rightUser).name}`;
-        const heatmaps = [
-            leftUser ? `<div class="tat-grid-wrap" style="margin-bottom:16px">${userHeatmapHTML(leftUser.name, "#4fc3f7", leftMap)}</div>` : "",
-            rightUser ? `<div class="tat-grid-wrap">${userHeatmapHTML(rightUser.name, "#ef5350", rightMap)}</div>` : "",
-        ].join("");
+        function sideHTML(users, maps, color, sideTitle) {
+            if (!users.length) return "";
+            const header = sideTitle
+                ? `<h4 style="color:${color};font-size:13px;margin:0 0 8px;font-weight:600">${sideTitle}</h4>`
+                : "";
+            const items = users.map((u, i) => `<div class="tat-grid-wrap" style="margin-bottom:12px">${userHeatmapHTML(u.name, color, maps[i])}</div>`).join("");
+            return `<div style="margin-bottom:16px">${header}${items}</div>`;
+        }
+
+        const bothSides = leftUsers.length && rightUsers.length;
+        let title;
+        if (bothSides) title = `User Comparison (${leftUsers.length} vs ${rightUsers.length})`;
+        else if (total === 1) title = `Activity: ${(leftUsers[0] || rightUsers[0]).name}`;
+        else title = `Activity: ${total} users`;
 
         container.innerHTML = `
             <div style="margin-top:16px;padding-top:16px;border-top:1px solid #333">
                 <h3 style="color:#fff;font-size:15px;margin:0 0 12px">${title}</h3>
-                ${heatmaps}
+                ${sideHTML(leftUsers, leftMaps, "#4fc3f7", bothSides ? "My faction" : "")}
+                ${sideHTML(rightUsers, rightMaps, "#ef5350", bothSides ? "Opponent" : "")}
                 <div class="tat-legend" style="margin-top:8px">
                     <span class="tat-legend-box" style="background:#2e7d32"></span> Online
                     <span class="tat-legend-box" style="background:#5d4037"></span> Idle
