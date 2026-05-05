@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.7.1
+// @version      2.7.2
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.7.1";
+    const VERSION = "2.7.2";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
@@ -1405,6 +1405,13 @@
 
         let compareData = null;
 
+        // Persist across reloads. Selections clear per-side only when that side's
+        // faction changes — changing days alone keeps everything.
+        const selectedLeft = new Map();
+        const selectedRight = new Map();
+        let lastLeftId = null, lastRightId = null;
+        let lastSortCol = "pct_online", lastSortDir = -1;
+
         const load = () => {
             const left = Number(document.getElementById("tat-cmp-left").value);
             const rightRaw = Number(document.getElementById("tat-cmp-right").value);
@@ -1428,12 +1435,30 @@
         async function fetchAndRenderCompare(leftId, rightId, days) {
             const container = document.getElementById("tat-compare-container");
             const exportBtn = document.getElementById("tat-export-compare");
+
+            // Capture sort state from the previous render before discarding the container.
+            const prevTables = document.getElementById("tat-cmp-tables");
+            if (prevTables) {
+                if (prevTables._sortCol) lastSortCol = prevTables._sortCol;
+                if (prevTables._sortDir != null) lastSortDir = prevTables._sortDir;
+            }
+
+            // Per-side selection clears only when that side's faction changes.
+            if (lastLeftId !== null && leftId !== lastLeftId) selectedLeft.clear();
+            if (rightId !== lastRightId) selectedRight.clear();
+            lastLeftId = leftId;
+            lastRightId = rightId;
+
             container.innerHTML = `<div class="tat-status">${rightId ? "Loading both factions..." : "Loading your faction..."}</div>`;
             if (exportBtn) exportBtn.disabled = true;
             compareData = null;
             const userCmpEl = document.getElementById("tat-user-compare");
-            userCmpEl.style.display = "none";
-            userCmpEl.innerHTML = "";
+            // Hide the heatmap section only when nothing remains selected — otherwise
+            // keep prior heatmaps visible while data refetches with the new day range.
+            if (!selectedLeft.size && !selectedRight.size) {
+                userCmpEl.style.display = "none";
+                userCmpEl.innerHTML = "";
+            }
             resetUserCompareCache();
 
             let leftData, rightData;
@@ -1501,6 +1526,11 @@
             container.innerHTML = `${summaryHTML}${hintHTML}${mobileColPickerHTML}<div id="tat-cmp-tables"></div>`;
 
             const tablesContainer = document.getElementById("tat-cmp-tables");
+            // Seed persisted state onto the freshly created container.
+            tablesContainer._sortCol = lastSortCol;
+            tablesContainer._sortDir = lastSortDir;
+            tablesContainer._selLeft = new Set(selectedLeft.keys());
+            tablesContainer._selRight = new Set(selectedRight.keys());
             renderCompareTables(leftData, rightData, tablesContainer, null, null);
 
             const mobileColSel = document.getElementById("tat-cmp-mobile-col");
@@ -1528,12 +1558,8 @@
             }
 
             // Per-user heatmaps on name click — multi-select on each side; click again to deselect.
-            // Maps preserve insertion order so heatmaps stack in the order the user picked them.
-            const selectedLeft = new Map();
-            const selectedRight = new Map();
-            tablesContainer._selLeft = new Set();
-            tablesContainer._selRight = new Set();
-
+            // selectedLeft/selectedRight live in the renderCompare scope so they persist
+            // across reloads triggered by the days/factions filters.
             tablesContainer.addEventListener("click", (e) => {
                 const nameCell = e.target.closest(".tat-cmp-name");
                 if (!nameCell) return;
@@ -1553,6 +1579,11 @@
                 if (tablesContainer._render) tablesContainer._render();
                 loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days);
             });
+
+            // If selections survived a reload (e.g. days filter changed), refresh heatmaps.
+            if (selectedLeft.size || selectedRight.size) {
+                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days);
+            }
         }
 
         load();
