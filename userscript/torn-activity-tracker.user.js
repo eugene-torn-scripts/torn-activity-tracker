@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.7.0
+// @version      2.7.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.7.0";
+    const VERSION = "2.7.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
 
@@ -1307,9 +1307,14 @@
             const selL = container._selLeft instanceof Set ? container._selLeft : new Set();
             const selR = container._selRight instanceof Set ? container._selRight : new Set();
 
+            // Preserve scroll position across re-renders so toggling a selection
+            // doesn't snap the table back to the top.
+            const prevScrollEl = container.querySelector("[data-tat-cmp-scroll]");
+            const prevScrollTop = prevScrollEl ? prevScrollEl.scrollTop : 0;
+
             let html;
             if (hasRight) {
-                html = `<div style="overflow-y:auto;max-height:280px">
+                html = `<div data-tat-cmp-scroll style="overflow-y:auto;max-height:280px">
                     <table class="tat-grid" style="font-size:12px;table-layout:fixed">
                     <thead><tr>
                         ${thRow("left")}
@@ -1325,7 +1330,7 @@
                 }
                 html += `</tbody></table></div>`;
             } else {
-                html = `<div style="overflow-y:auto;max-height:280px">
+                html = `<div data-tat-cmp-scroll style="overflow-y:auto;max-height:280px">
                     <table class="tat-grid" style="font-size:12px;table-layout:fixed">
                     <thead><tr>${thRow("left")}</tr></thead><tbody>`;
                 for (let i = 0; i < sortedL.length; i++) {
@@ -1334,6 +1339,8 @@
                 html += `</tbody></table></div>`;
             }
             container.innerHTML = html;
+            const newScrollEl = container.querySelector("[data-tat-cmp-scroll]");
+            if (newScrollEl && prevScrollTop) newScrollEl.scrollTop = prevScrollTop;
 
             // Sort click — any header sorts both sides
             container.querySelectorAll("th[data-col]").forEach((th) => {
@@ -1424,7 +1431,10 @@
             container.innerHTML = `<div class="tat-status">${rightId ? "Loading both factions..." : "Loading your faction..."}</div>`;
             if (exportBtn) exportBtn.disabled = true;
             compareData = null;
-            document.getElementById("tat-user-compare").style.display = "none";
+            const userCmpEl = document.getElementById("tat-user-compare");
+            userCmpEl.style.display = "none";
+            userCmpEl.innerHTML = "";
+            resetUserCompareCache();
 
             let leftData, rightData;
             try {
@@ -1548,6 +1558,15 @@
         load();
     }
 
+    // Per-user heatmap cache for the Compare tab. Reset by resetUserCompareCache()
+    // when factions/days change so we never serve stale data.
+    const userHoursCache = new Map();
+    let loadUserCompareToken = 0;
+    function resetUserCompareCache() {
+        userHoursCache.clear();
+        loadUserCompareToken++;
+    }
+
     async function loadUserCompare(leftUsers, rightUsers, days) {
         const container = document.getElementById("tat-user-compare");
         if (!leftUsers.length && !rightUsers.length) {
@@ -1557,25 +1576,37 @@
         }
         container.style.display = "block";
 
-        const total = leftUsers.length + rightUsers.length;
-        container.innerHTML = `<div class="tat-status" style="margin-top:16px">Loading heatmap${total > 1 ? "s" : ""} for ${total} user${total > 1 ? "s" : ""}...</div>`;
+        const myToken = ++loadUserCompareToken;
+        const allUsers = [...leftUsers, ...rightUsers];
+        const missing = allUsers.filter((u) => !userHoursCache.has(u.uid));
 
-        const fetchHours = (uid) => backendRequest("GET", `/v1/activity/user-hourly?user=${uid}&days=${days}`);
-        let leftHoursList, rightHoursList;
-        try {
-            [leftHoursList, rightHoursList] = await Promise.all([
-                Promise.all(leftUsers.map((u) => fetchHours(u.uid))),
-                Promise.all(rightUsers.map((u) => fetchHours(u.uid))),
-            ]);
-        } catch (err) {
-            container.innerHTML = `<div class="tat-status" style="color:#ef5350;margin-top:16px">Failed to load user data.</div>`;
-            return;
+        // Only show a loading placeholder on the first paint (empty container).
+        // Subsequent clicks keep the prior heatmaps visible while new data fetches —
+        // prevents the section from collapsing and jumping the page.
+        if (missing.length && !container.innerHTML.trim()) {
+            container.innerHTML = `<div class="tat-status" style="margin-top:16px">Loading heatmaps...</div>`;
         }
 
+        if (missing.length) {
+            try {
+                const results = await Promise.all(missing.map((u) =>
+                    backendRequest("GET", `/v1/activity/user-hourly?user=${u.uid}&days=${days}`)
+                        .then((hours) => ({ uid: u.uid, hours }))
+                ));
+                if (myToken !== loadUserCompareToken) return; // superseded by a newer click
+                for (const { uid, hours } of results) userHoursCache.set(uid, hours);
+            } catch (err) {
+                if (myToken !== loadUserCompareToken) return;
+                container.innerHTML = `<div class="tat-status" style="color:#ef5350;margin-top:16px">Failed to load user data.</div>`;
+                return;
+            }
+        }
+        if (myToken !== loadUserCompareToken) return;
+
         const allDates = new Set();
-        const buildMap = (data) => {
+        const buildMap = (uid) => {
             const m = new Map();
-            for (const row of data) {
+            for (const row of (userHoursCache.get(uid) || [])) {
                 const d = new Date(row.hour);
                 const dateKey = d.toISOString().slice(0, 10);
                 const hour = d.getUTCHours();
@@ -1586,8 +1617,9 @@
             return m;
         };
 
-        const leftMaps = leftHoursList.map(buildMap);
-        const rightMaps = rightHoursList.map(buildMap);
+        const leftMaps = leftUsers.map((u) => buildMap(u.uid));
+        const rightMaps = rightUsers.map((u) => buildMap(u.uid));
+        const total = leftUsers.length + rightUsers.length;
         const sortedDates = [...allDates].sort().reverse();
         const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
