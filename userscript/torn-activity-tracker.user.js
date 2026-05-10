@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.8.0
+// @version      2.8.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.8.0";
+    const VERSION = "2.8.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters" };
 
@@ -2051,7 +2051,11 @@
         maxLastActionDays: 7,
         minLevel: 30,
         maxLevel: 100,
+        minAge: "",
+        maxAge: "",
         factionStatus: "none",
+        factionId: "",
+        search: "",
         sort: "level",
         sortDir: "desc",
         offset: 0,
@@ -2070,7 +2074,11 @@
             maxLastActionDays: f.maxLastActionDays,
             minLevel: f.minLevel,
             maxLevel: f.maxLevel,
+            minAge: f.minAge,
+            maxAge: f.maxAge,
             factionStatus: f.factionStatus,
+            factionId: f.factionId,
+            search: f.search,
             sort: f.sort,
             sortDir: f.sortDir,
             limit: f.limit,
@@ -2087,15 +2095,26 @@
         return `${days}d ago`;
     }
 
+    function fmtMonthYear(ts) {
+        if (!ts) return "—";
+        const d = new Date(ts);
+        return d.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+    }
+
     async function renderRecruit(el) {
         let filters = loadRecruitFilters();
 
         el.innerHTML = `
-            <div class="tat-grid-controls">
+            <div class="tat-grid-controls" style="row-gap:8px">
                 <label>Level:</label>
-                <input type="number" id="tat-rec-min-level" min="1" max="100" value="${filters.minLevel}" style="width:60px">
+                <input type="number" id="tat-rec-min-level" min="1" max="100" placeholder="min" value="${filters.minLevel}" style="width:60px">
                 <span style="color:#666">—</span>
-                <input type="number" id="tat-rec-max-level" min="1" max="100" value="${filters.maxLevel}" style="width:60px">
+                <input type="number" id="tat-rec-max-level" min="1" max="100" placeholder="max" value="${filters.maxLevel}" style="width:60px">
+
+                <label>Age (days):</label>
+                <input type="number" id="tat-rec-min-age" min="0" placeholder="min" value="${filters.minAge}" style="width:70px">
+                <span style="color:#666">—</span>
+                <input type="number" id="tat-rec-max-age" min="0" placeholder="max" value="${filters.maxAge}" style="width:70px">
 
                 <label>Active in last:</label>
                 <select id="tat-rec-active">
@@ -2104,6 +2123,8 @@
                     <option value="7"${filters.maxLastActionDays === 7 ? " selected" : ""}>7 days</option>
                     <option value="14"${filters.maxLastActionDays === 14 ? " selected" : ""}>14 days</option>
                     <option value="30"${filters.maxLastActionDays === 30 ? " selected" : ""}>30 days</option>
+                    <option value="90"${filters.maxLastActionDays === 90 ? " selected" : ""}>90 days</option>
+                    <option value="365"${filters.maxLastActionDays === 365 ? " selected" : ""}>1 year</option>
                 </select>
 
                 <label>Faction:</label>
@@ -2111,7 +2132,14 @@
                     <option value="none"${filters.factionStatus === "none" ? " selected" : ""}>No faction</option>
                     <option value="not_mine"${filters.factionStatus === "not_mine" ? " selected" : ""}>Not mine</option>
                     <option value="any"${filters.factionStatus === "any" ? " selected" : ""}>Any</option>
+                    <option value="specific"${filters.factionStatus === "specific" ? " selected" : ""}>Specific id…</option>
                 </select>
+                <input type="number" id="tat-rec-faction-id" min="1" placeholder="faction id"
+                       value="${filters.factionId}"
+                       style="width:100px;display:${filters.factionStatus === "specific" ? "inline-block" : "none"}">
+
+                <label>Search:</label>
+                <input type="text" id="tat-rec-search" placeholder="name or id" value="${escapeAttr(filters.search || "")}" style="width:140px">
 
                 <button class="tat-btn tat-btn-primary" id="tat-rec-apply" style="padding:6px 14px;font-size:13px">Apply</button>
             </div>
@@ -2123,11 +2151,10 @@
                         <tr>
                             <th data-col="username" style="text-align:left">Name</th>
                             <th data-col="level">Lvl</th>
-                            <th>Rank</th>
                             <th>Faction</th>
                             <th data-col="last_action">Last action</th>
+                            <th data-col="signed_up">Signed up</th>
                             <th data-col="age">Age</th>
-                            <th>Profile</th>
                         </tr>
                     </thead>
                     <tbody id="tat-rec-tbody"></tbody>
@@ -2135,6 +2162,17 @@
             </div>
             <div id="tat-rec-pager" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;color:#888;font-size:12px"></div>
         `;
+
+        // Faction-id input visibility tracks the dropdown
+        document.getElementById("tat-rec-faction-status").addEventListener("change", (e) => {
+            document.getElementById("tat-rec-faction-id").style.display =
+                e.target.value === "specific" ? "inline-block" : "none";
+        });
+
+        // Submit on Enter from any input/select in the controls bar
+        el.querySelector(".tat-grid-controls").addEventListener("keydown", (e) => {
+            if (e.key === "Enter") document.getElementById("tat-rec-apply").click();
+        });
 
         async function fetchAndRender() {
             const status = document.getElementById("tat-rec-status");
@@ -2152,6 +2190,12 @@
                 sort: filters.sort,
                 sortDir: filters.sortDir,
             });
+            if (filters.minAge !== "" && filters.minAge != null) params.set("minAge", String(filters.minAge));
+            if (filters.maxAge !== "" && filters.maxAge != null) params.set("maxAge", String(filters.maxAge));
+            if (filters.factionStatus === "specific" && filters.factionId) {
+                params.set("factionId", String(filters.factionId));
+            }
+            if (filters.search && filters.search.trim()) params.set("search", filters.search.trim());
 
             let data;
             try {
@@ -2164,7 +2208,7 @@
             const users = data.users || [];
             if (users.length === 0) {
                 status.textContent = data.total === 0
-                    ? "No users match these filters. Catalog populates weekly — if you just deployed, the first crawl runs Sunday 02:00 UTC."
+                    ? "No users match these filters."
                     : "No more results on this page.";
                 document.getElementById("tat-rec-pager").innerHTML = "";
                 return;
@@ -2175,15 +2219,15 @@
                 const factionCell = u.faction_id
                     ? `<a href="https://www.torn.com/factions.php?step=profile&ID=${u.faction_id}" target="_blank" style="color:#8ecae6;text-decoration:none">${u.faction_id}</a>`
                     : `<span style="color:#666">—</span>`;
+                const nameCell = `<a href="https://www.torn.com/profiles.php?XID=${u.user_id}" target="_blank" style="color:#4fc3f7;text-decoration:none">${escapeHtml(u.username || "?")}</a> <span style="color:#666">[${u.user_id}]</span>`;
                 return `
                     <tr>
-                        <td style="text-align:left">${escapeHtml(u.username || "?")} <span style="color:#666">[${u.user_id}]</span></td>
+                        <td style="text-align:left">${nameCell}</td>
                         <td>${u.level ?? "?"}</td>
-                        <td style="font-size:11px;color:#aaa">${escapeHtml(u.rank_name || "—")}</td>
                         <td>${factionCell}</td>
                         <td>${fmtDaysAgo(u.last_action_at)}</td>
+                        <td style="font-size:11px;color:#aaa">${fmtMonthYear(u.signed_up_at)}</td>
                         <td>${u.age_in_days ?? "?"}d</td>
-                        <td><a href="https://www.torn.com/profiles.php?XID=${u.user_id}" target="_blank" style="color:#4fc3f7;text-decoration:none">→</a></td>
                     </tr>
                 `;
             }).join("");
@@ -2240,8 +2284,17 @@
             const maxLvl = Number(document.getElementById("tat-rec-max-level").value) || RECRUIT_DEFAULTS.maxLevel;
             filters.minLevel = Math.max(1, Math.min(100, minLvl));
             filters.maxLevel = Math.max(filters.minLevel, Math.min(100, maxLvl));
+
+            const minAgeRaw = document.getElementById("tat-rec-min-age").value;
+            const maxAgeRaw = document.getElementById("tat-rec-max-age").value;
+            filters.minAge = minAgeRaw === "" ? "" : Math.max(0, Number(minAgeRaw));
+            filters.maxAge = maxAgeRaw === "" ? "" : Math.max(0, Number(maxAgeRaw));
+
             filters.maxLastActionDays = Number(document.getElementById("tat-rec-active").value) || 7;
             filters.factionStatus = document.getElementById("tat-rec-faction-status").value;
+            const fidRaw = document.getElementById("tat-rec-faction-id").value;
+            filters.factionId = fidRaw === "" ? "" : Math.max(1, Number(fidRaw));
+            filters.search = document.getElementById("tat-rec-search").value || "";
             filters.offset = 0;
             saveRecruitFilters(filters);
             fetchAndRender();
