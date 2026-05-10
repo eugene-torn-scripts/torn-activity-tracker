@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.8.1
+// @version      2.9.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,9 +41,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.8.1";
+    const VERSION = "2.9.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -351,6 +351,15 @@
 .tat-cmp-name{cursor:pointer}
 .tat-cmp-name:hover{text-decoration:underline}
 .tat-mobile-col-picker{display:none}
+
+/* Recruit-tab column-toggle chips (SPA-style) */
+.tat-col-chip{cursor:pointer;padding:3px 8px;border-radius:3px;user-select:none;display:inline-flex;align-items:center}
+.tat-col-chip input{display:none}
+.tat-col-chip:has(input:checked){background:#1a3a4a;border:1px solid #4fc3f7}
+.tat-col-chip:has(input:checked) span{color:#4fc3f7}
+.tat-col-chip:has(input:not(:checked)){background:#333;border:1px solid #444}
+.tat-col-chip:has(input:not(:checked)) span{color:#888}
+.tat-col-chip:hover{border-color:#888}
 
 /* Combobox (watchlist candidate search) */
 .tat-combobox{position:relative}
@@ -2047,6 +2056,19 @@
 
     // ── Recruit tab ──────────────────────────────────────────
 
+    // Stat-min filters: id used in querystring + label.
+    const RECRUIT_STAT_FILTERS = [
+        { id: "minXanax",          label: "Xanax",        width: 70 },
+        { id: "minRefillsEnergy",  label: "Refills E",    width: 70 },
+        { id: "minActivityStreak", label: "Streak",       width: 60 },
+        { id: "minRankedWarHits",  label: "RW hits",      width: 70 },
+        { id: "minAttacksWon",     label: "Atks won",     width: 80 },
+        { id: "minDonatorDays",    label: "Donator d",    width: 70 },
+        { id: "minNetworth",       label: "Networth $",   width: 100 },
+        { id: "minFairFight",      label: "FF",           width: 50, step: "0.01" },
+        { id: "minBsEstimate",     label: "BS",           width: 90 },
+    ];
+
     const RECRUIT_DEFAULTS = {
         maxLastActionDays: 7,
         minLevel: 30,
@@ -2060,7 +2082,67 @@
         sortDir: "desc",
         offset: 0,
         limit: 50,
+        // Stat mins start empty so they don't filter anything by default
+        ...Object.fromEntries(RECRUIT_STAT_FILTERS.map((f) => [f.id, ""])),
     };
+
+    // Column definitions. `fixed` columns are always shown (Name).
+    // `default` controls initial visibility. `sortKey` matches the backend's
+    // `sort` enum (null = not sortable).
+    const RECRUIT_COLS = [
+        { id: "name",         label: "Name",         fixed: true,    sortKey: "username",        align: "left",
+          render: (u) => `<a href="https://www.torn.com/profiles.php?XID=${u.user_id}" target="_blank" style="color:#4fc3f7;text-decoration:none">${escapeHtml(u.username || "?")}</a>` },
+        { id: "id",           label: "ID",           default: false, sortKey: null,
+          render: (u) => `<span style="color:#888">${u.user_id}</span>` },
+        { id: "lvl",          label: "Lvl",          default: true,  sortKey: "level",
+          render: (u) => u.level ?? "—" },
+        { id: "faction",      label: "Faction",      default: true,  sortKey: null,
+          render: (u) => u.faction_id
+              ? `<a href="https://www.torn.com/factions.php?step=profile&ID=${u.faction_id}" target="_blank" style="color:#8ecae6;text-decoration:none">${u.faction_id}</a>`
+              : `<span style="color:#666">—</span>` },
+        { id: "last_action",  label: "Last action",  default: true,  sortKey: "last_action",
+          render: (u) => fmtDaysAgo(u.last_action_at) },
+        { id: "signed_up",    label: "Signed up",    default: true,  sortKey: "signed_up",
+          render: (u) => `<span style="color:#aaa;font-size:11px">${fmtMonthYear(u.signed_up_at)}</span>` },
+        { id: "age",          label: "Age",          default: false, sortKey: "age",
+          render: (u) => u.age_in_days != null ? `${u.age_in_days}d` : "—" },
+        { id: "stats_age",    label: "Stats fresh",  default: false, sortKey: null,
+          render: (u) => u.stats_refreshed_at ? fmtDaysAgo(u.stats_refreshed_at) : `<span style="color:#666">—</span>` },
+        { id: "streak",       label: "Streak",       default: true,  sortKey: "activity_streak",
+          render: (u) => u.activity_streak_cur != null ? String(u.activity_streak_cur) : "—" },
+        { id: "best_streak",  label: "Best streak",  default: false, sortKey: null,
+          render: (u) => u.activity_streak_best != null ? String(u.activity_streak_best) : "—" },
+        { id: "play_h",       label: "Play (h)",     default: false, sortKey: "activity_time",
+          render: (u) => u.activity_time_sec != null ? fmtCompactNum(Math.round(u.activity_time_sec / 3600)) : "—" },
+        { id: "donator",      label: "Donator d",    default: false, sortKey: "donator_days",
+          render: (u) => u.donator_days != null ? String(u.donator_days) : "—" },
+        { id: "xanax",        label: "Xanax",        default: true,  sortKey: "xanax",
+          render: (u) => fmtCompactNum(u.xanax_used) },
+        { id: "refills_e",    label: "Refills E",    default: true,  sortKey: "refills_energy",
+          render: (u) => fmtCompactNum(u.refills_energy) },
+        { id: "refills_n",    label: "Refills N",    default: false, sortKey: "refills_nerve",
+          render: (u) => fmtCompactNum(u.refills_nerve) },
+        { id: "rw_hits",      label: "RW hits",      default: true,  sortKey: "ranked_war_hits",
+          render: (u) => fmtCompactNum(u.ranked_war_hits) },
+        { id: "raid_hits",    label: "Raid hits",    default: false, sortKey: "raid_hits",
+          render: (u) => fmtCompactNum(u.raid_hits) },
+        { id: "rw_wins",      label: "RW wins",      default: false, sortKey: "ranked_war_wins",
+          render: (u) => u.ranked_war_wins != null ? String(u.ranked_war_wins) : "—" },
+        { id: "atk_won",      label: "Atks won",     default: false, sortKey: "attacks_won",
+          render: (u) => fmtCompactNum(u.attacks_won) },
+        { id: "atk_dmg",      label: "Atk dmg",      default: false, sortKey: "attack_damage",
+          render: (u) => fmtCompactNum(u.attack_damage_total) },
+        { id: "elo",          label: "ELO",          default: false, sortKey: "elo",
+          render: (u) => u.elo != null ? String(u.elo) : "—" },
+        { id: "fac_resp",     label: "Fac respect",  default: false, sortKey: "faction_respect",
+          render: (u) => fmtCompactNum(u.faction_respect) },
+        { id: "networth",     label: "Networth",     default: true,  sortKey: "networth",
+          render: (u) => fmtMoney(u.networth) },
+        { id: "ff",           label: "FF",           default: true,  sortKey: "fair_fight",
+          render: (u) => u.fair_fight != null ? Number(u.fair_fight).toFixed(2) : "—" },
+        { id: "bs",           label: "BS",           default: true,  sortKey: "bs_estimate",
+          render: (u) => u.bs_estimate_human || (u.bs_estimate != null ? fmtCompactNum(u.bs_estimate) : "—") },
+    ];
 
     function loadRecruitFilters() {
         const stored = GM_getValue(STORAGE_KEYS.recruitFilters);
@@ -2070,7 +2152,7 @@
 
     function saveRecruitFilters(f) {
         // Don't persist offset — paging always starts fresh on reopen
-        GM_setValue(STORAGE_KEYS.recruitFilters, {
+        const out = {
             maxLastActionDays: f.maxLastActionDays,
             minLevel: f.minLevel,
             maxLevel: f.maxLevel,
@@ -2082,7 +2164,27 @@
             sort: f.sort,
             sortDir: f.sortDir,
             limit: f.limit,
-        });
+        };
+        for (const sf of RECRUIT_STAT_FILTERS) out[sf.id] = f[sf.id];
+        GM_setValue(STORAGE_KEYS.recruitFilters, out);
+    }
+
+    function loadRecruitColumns() {
+        const stored = GM_getValue(STORAGE_KEYS.recruitColumns);
+        const out = {};
+        for (const col of RECRUIT_COLS) {
+            if (col.fixed) { out[col.id] = true; continue; }
+            if (stored && typeof stored === "object" && col.id in stored) {
+                out[col.id] = !!stored[col.id];
+            } else {
+                out[col.id] = !!col.default;
+            }
+        }
+        return out;
+    }
+
+    function saveRecruitColumns(visible) {
+        GM_setValue(STORAGE_KEYS.recruitColumns, visible);
     }
 
     function fmtDaysAgo(ts) {
@@ -2101,67 +2203,157 @@
         return d.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
     }
 
+    function fmtCompactNum(n) {
+        if (n == null) return "—";
+        const abs = Math.abs(n);
+        if (abs >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "b";
+        if (abs >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "m";
+        if (abs >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+        return String(n);
+    }
+
+    function fmtMoney(n) {
+        if (n == null) return "—";
+        return "$" + fmtCompactNum(n);
+    }
+
     async function renderRecruit(el) {
         let filters = loadRecruitFilters();
+        let visibleCols = loadRecruitColumns();
+
+        // Build stat-filter inputs HTML once
+        const statFiltersHTML = RECRUIT_STAT_FILTERS.map((sf) => `
+            <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">
+                ${sf.label}
+                <input type="number" id="tat-rec-${sf.id}" min="0" ${sf.step ? `step="${sf.step}"` : ""}
+                       placeholder="min" value="${filters[sf.id] ?? ""}"
+                       style="width:${sf.width}px;font-size:13px">
+            </label>
+        `).join("");
 
         el.innerHTML = `
-            <div class="tat-grid-controls" style="row-gap:8px">
-                <label>Level:</label>
-                <input type="number" id="tat-rec-min-level" min="1" max="100" placeholder="min" value="${filters.minLevel}" style="width:60px">
-                <span style="color:#666">—</span>
-                <input type="number" id="tat-rec-max-level" min="1" max="100" placeholder="max" value="${filters.maxLevel}" style="width:60px">
-
-                <label>Age (days):</label>
-                <input type="number" id="tat-rec-min-age" min="0" placeholder="min" value="${filters.minAge}" style="width:70px">
-                <span style="color:#666">—</span>
-                <input type="number" id="tat-rec-max-age" min="0" placeholder="max" value="${filters.maxAge}" style="width:70px">
-
-                <label>Active in last:</label>
-                <select id="tat-rec-active">
-                    <option value="1"${filters.maxLastActionDays === 1 ? " selected" : ""}>1 day</option>
-                    <option value="3"${filters.maxLastActionDays === 3 ? " selected" : ""}>3 days</option>
-                    <option value="7"${filters.maxLastActionDays === 7 ? " selected" : ""}>7 days</option>
-                    <option value="14"${filters.maxLastActionDays === 14 ? " selected" : ""}>14 days</option>
-                    <option value="30"${filters.maxLastActionDays === 30 ? " selected" : ""}>30 days</option>
-                    <option value="90"${filters.maxLastActionDays === 90 ? " selected" : ""}>90 days</option>
-                    <option value="365"${filters.maxLastActionDays === 365 ? " selected" : ""}>1 year</option>
-                </select>
-
-                <label>Faction:</label>
-                <select id="tat-rec-faction-status">
-                    <option value="none"${filters.factionStatus === "none" ? " selected" : ""}>No faction</option>
-                    <option value="not_mine"${filters.factionStatus === "not_mine" ? " selected" : ""}>Not mine</option>
-                    <option value="any"${filters.factionStatus === "any" ? " selected" : ""}>Any</option>
-                    <option value="specific"${filters.factionStatus === "specific" ? " selected" : ""}>Specific id…</option>
-                </select>
-                <input type="number" id="tat-rec-faction-id" min="1" placeholder="faction id"
-                       value="${filters.factionId}"
-                       style="width:100px;display:${filters.factionStatus === "specific" ? "inline-block" : "none"}">
-
-                <label>Search:</label>
-                <input type="text" id="tat-rec-search" placeholder="name or id" value="${escapeAttr(filters.search || "")}" style="width:140px">
-
+            <div class="tat-grid-controls" style="row-gap:8px;align-items:flex-end">
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Level
+                    <span style="display:inline-flex;gap:2px">
+                        <input type="number" id="tat-rec-min-level" min="1" max="100" placeholder="min" value="${filters.minLevel}" style="width:50px">
+                        <input type="number" id="tat-rec-max-level" min="1" max="100" placeholder="max" value="${filters.maxLevel}" style="width:50px">
+                    </span>
+                </label>
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Age (d)
+                    <span style="display:inline-flex;gap:2px">
+                        <input type="number" id="tat-rec-min-age" min="0" placeholder="min" value="${filters.minAge}" style="width:60px">
+                        <input type="number" id="tat-rec-max-age" min="0" placeholder="max" value="${filters.maxAge}" style="width:60px">
+                    </span>
+                </label>
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Active
+                    <select id="tat-rec-active">
+                        <option value="1"${filters.maxLastActionDays === 1 ? " selected" : ""}>1d</option>
+                        <option value="3"${filters.maxLastActionDays === 3 ? " selected" : ""}>3d</option>
+                        <option value="7"${filters.maxLastActionDays === 7 ? " selected" : ""}>7d</option>
+                        <option value="14"${filters.maxLastActionDays === 14 ? " selected" : ""}>14d</option>
+                        <option value="30"${filters.maxLastActionDays === 30 ? " selected" : ""}>30d</option>
+                        <option value="90"${filters.maxLastActionDays === 90 ? " selected" : ""}>90d</option>
+                        <option value="365"${filters.maxLastActionDays === 365 ? " selected" : ""}>1y</option>
+                    </select>
+                </label>
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Faction
+                    <span style="display:inline-flex;gap:2px">
+                        <select id="tat-rec-faction-status">
+                            <option value="none"${filters.factionStatus === "none" ? " selected" : ""}>None</option>
+                            <option value="not_mine"${filters.factionStatus === "not_mine" ? " selected" : ""}>Not mine</option>
+                            <option value="any"${filters.factionStatus === "any" ? " selected" : ""}>Any</option>
+                            <option value="specific"${filters.factionStatus === "specific" ? " selected" : ""}>Id…</option>
+                        </select>
+                        <input type="number" id="tat-rec-faction-id" min="1" placeholder="faction id"
+                               value="${filters.factionId}"
+                               style="width:90px;display:${filters.factionStatus === "specific" ? "inline-block" : "none"}">
+                    </span>
+                </label>
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Search
+                    <input type="text" id="tat-rec-search" placeholder="name or id" value="${escapeAttr(filters.search || "")}" style="width:130px">
+                </label>
+                ${statFiltersHTML}
                 <button class="tat-btn tat-btn-primary" id="tat-rec-apply" style="padding:6px 14px;font-size:13px">Apply</button>
+                <button class="tat-btn tat-btn-export" id="tat-rec-reset" style="padding:6px 10px;font-size:12px" title="Reset all filters">Reset</button>
             </div>
+
+            <div id="tat-rec-col-toggle" style="display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 10px;font-size:11px"></div>
 
             <div id="tat-rec-status" class="tat-status">Loading candidates...</div>
             <div class="tat-grid-wrap">
                 <table class="tat-grid" id="tat-rec-table" style="display:none">
-                    <thead>
-                        <tr>
-                            <th data-col="username" style="text-align:left">Name</th>
-                            <th data-col="level">Lvl</th>
-                            <th>Faction</th>
-                            <th data-col="last_action">Last action</th>
-                            <th data-col="signed_up">Signed up</th>
-                            <th data-col="age">Age</th>
-                        </tr>
-                    </thead>
+                    <thead><tr id="tat-rec-thead-row"></tr></thead>
                     <tbody id="tat-rec-tbody"></tbody>
                 </table>
             </div>
             <div id="tat-rec-pager" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;color:#888;font-size:12px"></div>
         `;
+
+        // Build the column-toggle chip row
+        function renderColToggle() {
+            const wrap = document.getElementById("tat-rec-col-toggle");
+            wrap.innerHTML = `<span style="color:#888;align-self:center;margin-right:4px">Columns:</span>` +
+                RECRUIT_COLS.filter((c) => !c.fixed).map((c) => {
+                    const checked = visibleCols[c.id] ? "checked" : "";
+                    return `<label class="tat-col-chip"><input type="checkbox" data-col="${c.id}" ${checked}><span>${escapeHtml(c.label)}</span></label>`;
+                }).join("");
+            wrap.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+                cb.addEventListener("change", () => {
+                    visibleCols[cb.dataset.col] = cb.checked;
+                    saveRecruitColumns(visibleCols);
+                    renderTableShape();
+                });
+            });
+        }
+
+        function visibleColDefs() {
+            return RECRUIT_COLS.filter((c) => visibleCols[c.id]);
+        }
+
+        function renderTableShape() {
+            const cols = visibleColDefs();
+            const headerRow = document.getElementById("tat-rec-thead-row");
+            headerRow.innerHTML = cols.map((c) => {
+                const sortAttr = c.sortKey ? ` data-col="${c.sortKey}"` : "";
+                const align = c.align === "left" ? ' style="text-align:left"' : "";
+                let cls = "";
+                if (c.sortKey && filters.sort === c.sortKey) cls = filters.sortDir === "asc" ? "sort-asc" : "sort-desc";
+                return `<th${sortAttr}${align}${cls ? ` class="${cls}"` : ""}>${escapeHtml(c.label)}</th>`;
+            }).join("");
+
+            // Re-bind sort clicks
+            headerRow.querySelectorAll("th[data-col]").forEach((th) => {
+                th.onclick = () => {
+                    const col = th.dataset.col;
+                    if (filters.sort === col) {
+                        filters.sortDir = filters.sortDir === "asc" ? "desc" : "asc";
+                    } else {
+                        filters.sort = col;
+                        filters.sortDir = col === "username" ? "asc" : "desc";
+                    }
+                    filters.offset = 0;
+                    saveRecruitFilters(filters);
+                    fetchAndRender();
+                };
+            });
+
+            // Repaint body if we already have data cached
+            if (lastUsers) renderBody(lastUsers);
+        }
+
+        let lastUsers = null;
+
+        function renderBody(users) {
+            const cols = visibleColDefs();
+            const tbody = document.getElementById("tat-rec-tbody");
+            tbody.innerHTML = users.map((u) => {
+                const cells = cols.map((c) => {
+                    const align = c.align === "left" ? ' style="text-align:left"' : "";
+                    return `<td${align}>${c.render(u)}</td>`;
+                }).join("");
+                return `<tr>${cells}</tr>`;
+            }).join("");
+        }
 
         // Faction-id input visibility tracks the dropdown
         document.getElementById("tat-rec-faction-status").addEventListener("change", (e) => {
@@ -2192,10 +2384,12 @@
             });
             if (filters.minAge !== "" && filters.minAge != null) params.set("minAge", String(filters.minAge));
             if (filters.maxAge !== "" && filters.maxAge != null) params.set("maxAge", String(filters.maxAge));
-            if (filters.factionStatus === "specific" && filters.factionId) {
-                params.set("factionId", String(filters.factionId));
-            }
+            if (filters.factionStatus === "specific" && filters.factionId) params.set("factionId", String(filters.factionId));
             if (filters.search && filters.search.trim()) params.set("search", filters.search.trim());
+            for (const sf of RECRUIT_STAT_FILTERS) {
+                const v = filters[sf.id];
+                if (v !== "" && v != null) params.set(sf.id, String(v));
+            }
 
             let data;
             try {
@@ -2206,6 +2400,7 @@
             }
 
             const users = data.users || [];
+            lastUsers = users;
             if (users.length === 0) {
                 status.textContent = data.total === 0
                     ? "No users match these filters."
@@ -2214,23 +2409,8 @@
                 return;
             }
 
-            const tbody = document.getElementById("tat-rec-tbody");
-            tbody.innerHTML = users.map((u) => {
-                const factionCell = u.faction_id
-                    ? `<a href="https://www.torn.com/factions.php?step=profile&ID=${u.faction_id}" target="_blank" style="color:#8ecae6;text-decoration:none">${u.faction_id}</a>`
-                    : `<span style="color:#666">—</span>`;
-                const nameCell = `<a href="https://www.torn.com/profiles.php?XID=${u.user_id}" target="_blank" style="color:#4fc3f7;text-decoration:none">${escapeHtml(u.username || "?")}</a> <span style="color:#666">[${u.user_id}]</span>`;
-                return `
-                    <tr>
-                        <td style="text-align:left">${nameCell}</td>
-                        <td>${u.level ?? "?"}</td>
-                        <td>${factionCell}</td>
-                        <td>${fmtDaysAgo(u.last_action_at)}</td>
-                        <td style="font-size:11px;color:#aaa">${fmtMonthYear(u.signed_up_at)}</td>
-                        <td>${u.age_in_days ?? "?"}d</td>
-                    </tr>
-                `;
-            }).join("");
+            renderTableShape();
+            renderBody(users);
 
             status.textContent = `${data.total} matching users · showing ${filters.offset + 1}–${filters.offset + users.length}`;
             table.style.display = "";
@@ -2256,27 +2436,11 @@
                 filters.offset += filters.limit;
                 fetchAndRender();
             });
+        }
 
-            // Sortable headers
-            const ths = table.querySelectorAll("th[data-col]");
-            ths.forEach((th) => {
-                th.classList.remove("sort-asc", "sort-desc");
-                if (th.dataset.col === filters.sort) {
-                    th.classList.add(filters.sortDir === "asc" ? "sort-asc" : "sort-desc");
-                }
-                th.onclick = () => {
-                    const col = th.dataset.col;
-                    if (filters.sort === col) {
-                        filters.sortDir = filters.sortDir === "asc" ? "desc" : "asc";
-                    } else {
-                        filters.sort = col;
-                        filters.sortDir = col === "username" ? "asc" : "desc";
-                    }
-                    filters.offset = 0;
-                    saveRecruitFilters(filters);
-                    fetchAndRender();
-                };
-            });
+        function readNum(id, fallback) {
+            const raw = document.getElementById(id).value;
+            return raw === "" ? "" : Number(raw);
         }
 
         document.getElementById("tat-rec-apply").addEventListener("click", () => {
@@ -2285,21 +2449,31 @@
             filters.minLevel = Math.max(1, Math.min(100, minLvl));
             filters.maxLevel = Math.max(filters.minLevel, Math.min(100, maxLvl));
 
-            const minAgeRaw = document.getElementById("tat-rec-min-age").value;
-            const maxAgeRaw = document.getElementById("tat-rec-max-age").value;
-            filters.minAge = minAgeRaw === "" ? "" : Math.max(0, Number(minAgeRaw));
-            filters.maxAge = maxAgeRaw === "" ? "" : Math.max(0, Number(maxAgeRaw));
+            filters.minAge = readNum("tat-rec-min-age");
+            filters.maxAge = readNum("tat-rec-max-age");
 
             filters.maxLastActionDays = Number(document.getElementById("tat-rec-active").value) || 7;
             filters.factionStatus = document.getElementById("tat-rec-faction-status").value;
             const fidRaw = document.getElementById("tat-rec-faction-id").value;
             filters.factionId = fidRaw === "" ? "" : Math.max(1, Number(fidRaw));
             filters.search = document.getElementById("tat-rec-search").value || "";
+
+            for (const sf of RECRUIT_STAT_FILTERS) {
+                filters[sf.id] = readNum(`tat-rec-${sf.id}`);
+            }
+
             filters.offset = 0;
             saveRecruitFilters(filters);
             fetchAndRender();
         });
 
+        document.getElementById("tat-rec-reset").addEventListener("click", () => {
+            filters = { ...RECRUIT_DEFAULTS };
+            saveRecruitFilters(filters);
+            renderRecruit(el);
+        });
+
+        renderColToggle();
         await fetchAndRender();
     }
 
