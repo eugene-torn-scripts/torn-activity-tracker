@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.7.2
+// @version      2.8.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,9 +41,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.7.2";
+    const VERSION = "2.8.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -387,6 +387,7 @@
         { id: "hourly", label: "Hour Grid" },
         { id: "weekday", label: "Weekday Avg" },
         { id: "compare", label: "Compare" },
+        { id: "recruit", label: "Recruit" },
         { id: "settings", label: "Settings" },
     ];
 
@@ -485,6 +486,7 @@
             case "hourly": await renderHourGrid(el); break;
             case "weekday": await renderWeekdayAvg(el); break;
             case "compare": await renderCompare(el); break;
+            case "recruit": await renderRecruit(el); break;
             case "settings": renderSettings(el); break;
             case "admin": await renderAdmin(el); break;
         }
@@ -2041,6 +2043,211 @@
             const label = `${f.name || "Faction"} (${f.faction_id})`;
             return `<div class="tat-combo-item" data-fid="${f.faction_id}" data-label="${label.replace(/"/g, "&quot;")}">${label}</div>`;
         }).join("");
+    }
+
+    // ── Recruit tab ──────────────────────────────────────────
+
+    const RECRUIT_DEFAULTS = {
+        maxLastActionDays: 7,
+        minLevel: 30,
+        maxLevel: 100,
+        factionStatus: "none",
+        sort: "level",
+        sortDir: "desc",
+        offset: 0,
+        limit: 50,
+    };
+
+    function loadRecruitFilters() {
+        const stored = GM_getValue(STORAGE_KEYS.recruitFilters);
+        if (!stored || typeof stored !== "object") return { ...RECRUIT_DEFAULTS };
+        return { ...RECRUIT_DEFAULTS, ...stored, offset: 0 };
+    }
+
+    function saveRecruitFilters(f) {
+        // Don't persist offset — paging always starts fresh on reopen
+        GM_setValue(STORAGE_KEYS.recruitFilters, {
+            maxLastActionDays: f.maxLastActionDays,
+            minLevel: f.minLevel,
+            maxLevel: f.maxLevel,
+            factionStatus: f.factionStatus,
+            sort: f.sort,
+            sortDir: f.sortDir,
+            limit: f.limit,
+        });
+    }
+
+    function fmtDaysAgo(ts) {
+        if (!ts) return "—";
+        const sec = (Date.now() - new Date(ts).getTime()) / 1000;
+        if (sec < 60) return `${Math.floor(sec)}s ago`;
+        if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+        if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+        const days = Math.floor(sec / 86400);
+        return `${days}d ago`;
+    }
+
+    async function renderRecruit(el) {
+        let filters = loadRecruitFilters();
+
+        el.innerHTML = `
+            <div class="tat-grid-controls">
+                <label>Level:</label>
+                <input type="number" id="tat-rec-min-level" min="1" max="100" value="${filters.minLevel}" style="width:60px">
+                <span style="color:#666">—</span>
+                <input type="number" id="tat-rec-max-level" min="1" max="100" value="${filters.maxLevel}" style="width:60px">
+
+                <label>Active in last:</label>
+                <select id="tat-rec-active">
+                    <option value="1"${filters.maxLastActionDays === 1 ? " selected" : ""}>1 day</option>
+                    <option value="3"${filters.maxLastActionDays === 3 ? " selected" : ""}>3 days</option>
+                    <option value="7"${filters.maxLastActionDays === 7 ? " selected" : ""}>7 days</option>
+                    <option value="14"${filters.maxLastActionDays === 14 ? " selected" : ""}>14 days</option>
+                    <option value="30"${filters.maxLastActionDays === 30 ? " selected" : ""}>30 days</option>
+                </select>
+
+                <label>Faction:</label>
+                <select id="tat-rec-faction-status">
+                    <option value="none"${filters.factionStatus === "none" ? " selected" : ""}>No faction</option>
+                    <option value="not_mine"${filters.factionStatus === "not_mine" ? " selected" : ""}>Not mine</option>
+                    <option value="any"${filters.factionStatus === "any" ? " selected" : ""}>Any</option>
+                </select>
+
+                <button class="tat-btn tat-btn-primary" id="tat-rec-apply" style="padding:6px 14px;font-size:13px">Apply</button>
+            </div>
+
+            <div id="tat-rec-status" class="tat-status">Loading candidates...</div>
+            <div class="tat-grid-wrap">
+                <table class="tat-grid" id="tat-rec-table" style="display:none">
+                    <thead>
+                        <tr>
+                            <th data-col="username" style="text-align:left">Name</th>
+                            <th data-col="level">Lvl</th>
+                            <th>Rank</th>
+                            <th>Faction</th>
+                            <th data-col="last_action">Last action</th>
+                            <th data-col="age">Age</th>
+                            <th>Profile</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tat-rec-tbody"></tbody>
+                </table>
+            </div>
+            <div id="tat-rec-pager" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;color:#888;font-size:12px"></div>
+        `;
+
+        async function fetchAndRender() {
+            const status = document.getElementById("tat-rec-status");
+            const table = document.getElementById("tat-rec-table");
+            status.textContent = "Loading candidates...";
+            table.style.display = "none";
+
+            const params = new URLSearchParams({
+                maxLastActionDays: String(filters.maxLastActionDays),
+                minLevel: String(filters.minLevel),
+                maxLevel: String(filters.maxLevel),
+                factionStatus: filters.factionStatus,
+                offset: String(filters.offset),
+                limit: String(filters.limit),
+                sort: filters.sort,
+                sortDir: filters.sortDir,
+            });
+
+            let data;
+            try {
+                data = await backendRequest("GET", `/v1/recruitment/candidates?${params}`);
+            } catch (err) {
+                status.innerHTML = `<span style="color:#ef5350">Failed to load candidates: ${escapeHtml(err.error || err.message || "unknown error")}</span>`;
+                return;
+            }
+
+            const users = data.users || [];
+            if (users.length === 0) {
+                status.textContent = data.total === 0
+                    ? "No users match these filters. Catalog populates weekly — if you just deployed, the first crawl runs Sunday 02:00 UTC."
+                    : "No more results on this page.";
+                document.getElementById("tat-rec-pager").innerHTML = "";
+                return;
+            }
+
+            const tbody = document.getElementById("tat-rec-tbody");
+            tbody.innerHTML = users.map((u) => {
+                const factionCell = u.faction_id
+                    ? `<a href="https://www.torn.com/factions.php?step=profile&ID=${u.faction_id}" target="_blank" style="color:#8ecae6;text-decoration:none">${u.faction_id}</a>`
+                    : `<span style="color:#666">—</span>`;
+                return `
+                    <tr>
+                        <td style="text-align:left">${escapeHtml(u.username || "?")} <span style="color:#666">[${u.user_id}]</span></td>
+                        <td>${u.level ?? "?"}</td>
+                        <td style="font-size:11px;color:#aaa">${escapeHtml(u.rank_name || "—")}</td>
+                        <td>${factionCell}</td>
+                        <td>${fmtDaysAgo(u.last_action_at)}</td>
+                        <td>${u.age_in_days ?? "?"}d</td>
+                        <td><a href="https://www.torn.com/profiles.php?XID=${u.user_id}" target="_blank" style="color:#4fc3f7;text-decoration:none">→</a></td>
+                    </tr>
+                `;
+            }).join("");
+
+            status.textContent = `${data.total} matching users · showing ${filters.offset + 1}–${filters.offset + users.length}`;
+            table.style.display = "";
+
+            // Pager
+            const pager = document.getElementById("tat-rec-pager");
+            const hasPrev = filters.offset > 0;
+            const hasNext = filters.offset + users.length < data.total;
+            pager.innerHTML = `
+                <div>Page ${Math.floor(filters.offset / filters.limit) + 1} of ${Math.max(1, Math.ceil(data.total / filters.limit))}</div>
+                <div style="display:flex;gap:6px">
+                    <button class="tat-btn tat-btn-export" id="tat-rec-prev" ${hasPrev ? "" : "disabled"}>← Prev</button>
+                    <button class="tat-btn tat-btn-export" id="tat-rec-next" ${hasNext ? "" : "disabled"}>Next →</button>
+                </div>
+            `;
+            document.getElementById("tat-rec-prev").addEventListener("click", () => {
+                if (!hasPrev) return;
+                filters.offset = Math.max(0, filters.offset - filters.limit);
+                fetchAndRender();
+            });
+            document.getElementById("tat-rec-next").addEventListener("click", () => {
+                if (!hasNext) return;
+                filters.offset += filters.limit;
+                fetchAndRender();
+            });
+
+            // Sortable headers
+            const ths = table.querySelectorAll("th[data-col]");
+            ths.forEach((th) => {
+                th.classList.remove("sort-asc", "sort-desc");
+                if (th.dataset.col === filters.sort) {
+                    th.classList.add(filters.sortDir === "asc" ? "sort-asc" : "sort-desc");
+                }
+                th.onclick = () => {
+                    const col = th.dataset.col;
+                    if (filters.sort === col) {
+                        filters.sortDir = filters.sortDir === "asc" ? "desc" : "asc";
+                    } else {
+                        filters.sort = col;
+                        filters.sortDir = col === "username" ? "asc" : "desc";
+                    }
+                    filters.offset = 0;
+                    saveRecruitFilters(filters);
+                    fetchAndRender();
+                };
+            });
+        }
+
+        document.getElementById("tat-rec-apply").addEventListener("click", () => {
+            const minLvl = Number(document.getElementById("tat-rec-min-level").value) || RECRUIT_DEFAULTS.minLevel;
+            const maxLvl = Number(document.getElementById("tat-rec-max-level").value) || RECRUIT_DEFAULTS.maxLevel;
+            filters.minLevel = Math.max(1, Math.min(100, minLvl));
+            filters.maxLevel = Math.max(filters.minLevel, Math.min(100, maxLvl));
+            filters.maxLastActionDays = Number(document.getElementById("tat-rec-active").value) || 7;
+            filters.factionStatus = document.getElementById("tat-rec-faction-status").value;
+            filters.offset = 0;
+            saveRecruitFilters(filters);
+            fetchAndRender();
+        });
+
+        await fetchAndRender();
     }
 
     // ── Admin tab ────────────────────────────────────────────
