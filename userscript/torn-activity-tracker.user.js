@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.9.0
+// @version      2.11.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,9 +41,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.9.0";
+    const VERSION = "2.11.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareMobileCol: "tat_compare_mobile_col", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -350,7 +350,6 @@
 /* Compare layout */
 .tat-cmp-name{cursor:pointer}
 .tat-cmp-name:hover{text-decoration:underline}
-.tat-mobile-col-picker{display:none}
 
 /* Recruit-tab column-toggle chips (SPA-style) */
 .tat-col-chip{cursor:pointer;padding:3px 8px;border-radius:3px;user-select:none;display:inline-flex;align-items:center}
@@ -379,10 +378,6 @@
   .tat-grid th,.tat-grid td{padding:2px 3px}
   .tat-grid td.tat-cell{min-width:18px;font-size:10px}
   .tat-grid .tat-day-label{min-width:52px;font-size:10px}
-  .tat-mobile-col-picker{display:flex!important;align-items:center;gap:6px;margin-bottom:8px;
-    color:#aaa;font-size:12px;flex-wrap:wrap}
-  .tat-mobile-col-picker select{background:#252525;border:1px solid #444;color:#ddd;
-    padding:4px 6px;border-radius:4px;font-size:12px}
 }
 `;
         document.head.appendChild(style);
@@ -1227,6 +1222,55 @@
         return v * u;
     };
 
+    // Compare-tab columns. `available(ctx)` gates whether a column can be
+    // shown at all (e.g. BS only when FFScouter returned data; war-specific
+    // stats only when the BE included them). Visible columns are persisted
+    // in STORAGE_KEYS.compareColumns and toggleable via the chip row.
+    const COMPARE_COLS = [
+        { id: "name", label: "Name", fixed: true, align: "left",
+          sortVal: (m) => (m.name || "").toLowerCase(),
+          cell: (m, ctx) => `<td style="${ctx.bgStyle}text-align:left;color:#ccc;max-width:120px;overflow:hidden;text-overflow:ellipsis" class="tat-cmp-name" data-uid="${m.user_id}" data-name="${m.name || m.user_id}" data-side="${ctx.side}">${m.name || m.user_id}</td>` },
+        { id: "bs", label: "BS", default: true,
+          available: (ctx) => ctx.hasBs,
+          sortVal: (m, ctx) => parseBS(ctx.bsMap.get(m.user_id)?.bs),
+          cell: (m, ctx) => {
+              const bs = ctx.bsMap.get(m.user_id);
+              return `<td style="${ctx.bgStyle}color:#ffb74d;font-size:11px">${bs?.bs || "—"}</td>`;
+          } },
+        { id: "hours_online", label: "On", default: true,
+          sortVal: (m) => m.hours_online ?? 0,
+          cell: (m, ctx) => `<td style="${ctx.bgStyle}">${m.hours_online}h</td>` },
+        { id: "pct_online", label: "%", default: true,
+          sortVal: (m) => m.pct_online ?? 0,
+          cell: (m, ctx) => `<td style="${ctx.bgStyle}color:${m.pct_online > 50 ? "#4caf50" : "#ccc"}">${m.pct_online}%</td>` },
+        { id: "xanax_since_war", label: "Xan/war", default: true,
+          available: (ctx) => ctx.hasWarStats,
+          sortVal: (m) => m.xanax_since_war ?? -1,
+          cell: (m, ctx) => `<td style="${ctx.bgStyle}color:#ce93d8">${m.xanax_since_war != null ? m.xanax_since_war : "—"}</td>` },
+        { id: "overdoses_since_war", label: "OD/war", default: true,
+          available: (ctx) => ctx.hasWarStats,
+          sortVal: (m) => m.overdoses_since_war ?? -1,
+          cell: (m, ctx) => `<td style="${ctx.bgStyle}color:${m.overdoses_since_war > 0 ? "#ef5350" : "#aaa"}">${m.overdoses_since_war != null ? m.overdoses_since_war : "—"}</td>` },
+    ];
+
+    function loadCompareColumns() {
+        const stored = GM_getValue(STORAGE_KEYS.compareColumns);
+        const out = {};
+        for (const col of COMPARE_COLS) {
+            if (col.fixed) { out[col.id] = true; continue; }
+            if (stored && typeof stored === "object" && col.id in stored) {
+                out[col.id] = !!stored[col.id];
+            } else {
+                out[col.id] = !!col.default;
+            }
+        }
+        return out;
+    }
+
+    function saveCompareColumns(visible) {
+        GM_setValue(STORAGE_KEYS.compareColumns, visible);
+    }
+
     /**
      * Render both faction tables side-by-side in a single scroll container.
      * Shared sort state, synced by design (one DOM structure).
@@ -1237,74 +1281,79 @@
         const hasRight = Array.isArray(rightData);
         let sortCol = container._sortCol || "pct_online";
         let sortDir = container._sortDir ?? -1;
+        let visibleCols = loadCompareColumns();
+
+        function buildCtx(bsMap, side, bgStyle) {
+            const lbs = leftBsMap || new Map();
+            const rbs = rightBsMap || new Map();
+            const hasBs = lbs.size > 0 || (hasRight && rbs.size > 0);
+            const hasWarStats = leftData.some((m) => m.xanax_since_war != null || m.overdoses_since_war != null)
+                || (hasRight && rightData.some((m) => m.xanax_since_war != null || m.overdoses_since_war != null));
+            return { bsMap: bsMap || new Map(), side, bgStyle: bgStyle || "", hasBs, hasWarStats };
+        }
+
+        function availableCols() {
+            const probe = buildCtx(null, null, "");
+            return COMPARE_COLS.filter((c) => !c.available || c.available(probe));
+        }
+
+        function visibleColDefs() {
+            return availableCols().filter((c) => visibleCols[c.id]);
+        }
 
         function sortData(data, bsMap) {
+            const col = COMPARE_COLS.find((c) => c.id === sortCol);
+            const ctx = { bsMap: bsMap || new Map() };
+            const getter = col?.sortVal || ((m) => m[sortCol]);
             return [...data].sort((a, b) => {
-                let va = a[sortCol], vb = b[sortCol];
-                if (sortCol === "bs") {
-                    va = parseBS(bsMap.get(a.user_id)?.bs);
-                    vb = parseBS(bsMap.get(b.user_id)?.bs);
-                }
-                if (typeof va === "string") va = (va || "").toLowerCase();
-                if (typeof vb === "string") vb = (vb || "").toLowerCase();
+                let va = getter(a, ctx), vb = getter(b, ctx);
+                if (typeof va === "string") va = va.toLowerCase();
+                if (typeof vb === "string") vb = vb.toLowerCase();
                 return va < vb ? -1 * sortDir : va > vb ? 1 * sortDir : 0;
             });
         }
 
-        const ALL_COLS = {
-            bs: { key: "bs", label: "BS" },
-            hours_online: { key: "hours_online", label: "On" },
-            pct_online: { key: "pct_online", label: "%" },
-        };
+        function renderColToggle() {
+            const wrap = container.parentElement?.querySelector("[data-tat-cmp-col-toggle]");
+            if (!wrap) return;
+            const togglable = availableCols().filter((c) => !c.fixed);
+            if (togglable.length === 0) { wrap.style.display = "none"; return; }
+            wrap.style.display = "flex";
+            wrap.innerHTML = `<span style="color:#888;align-self:center;margin-right:4px">Columns:</span>` +
+                togglable.map((c) => {
+                    const checked = visibleCols[c.id] ? "checked" : "";
+                    return `<label class="tat-col-chip"><input type="checkbox" data-col="${c.id}" ${checked}><span>${c.label}</span></label>`;
+                }).join("");
+            wrap.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+                cb.addEventListener("change", () => {
+                    visibleCols[cb.dataset.col] = cb.checked;
+                    saveCompareColumns(visibleCols);
+                    // If the sort column just got hidden, fall back to a visible one.
+                    const vis = visibleColDefs();
+                    if (!vis.some((c) => c.id === sortCol)) {
+                        sortCol = vis.find((c) => c.id !== "name")?.id || "name";
+                        container._sortCol = sortCol;
+                    }
+                    render();
+                });
+            });
+        }
 
         function render() {
+            const cols = visibleColDefs();
             const lbs = leftBsMap || new Map();
             const rbs = rightBsMap || new Map();
-            const hasBs = lbs.size > 0 || (hasRight && rbs.size > 0);
             const sortedL = sortData(leftData, lbs);
             const sortedR = hasRight ? sortData(rightData, rbs) : [];
             const maxRows = Math.max(sortedL.length, sortedR.length);
 
-            const isMobile = window.innerWidth <= 768;
-            let mobileCol = GM_getValue(STORAGE_KEYS.compareMobileCol) || (hasBs ? "bs" : "pct_online");
-            if (mobileCol === "bs" && !hasBs) mobileCol = "pct_online";
-
-            const cols = [{ key: "name", label: "Name", align: "left" }];
-            if (isMobile) {
-                cols.push(ALL_COLS[mobileCol]);
-            } else {
-                if (hasBs) cols.push(ALL_COLS.bs);
-                cols.push(ALL_COLS.hours_online);
-                cols.push(ALL_COLS.pct_online);
-            }
-
-            // Keep the sort column in sync with what's visible on mobile
-            if (isMobile && sortCol !== "name" && sortCol !== mobileCol) sortCol = mobileCol;
-
             function thRow(side) {
                 let h = "";
                 for (const c of cols) {
-                    const cls = c.key === sortCol ? (sortDir === 1 ? " sort-asc" : " sort-desc") : "";
-                    h += `<th data-col="${c.key}" data-side="${side}" class="${cls}" style="${c.align ? "text-align:" + c.align : ""}">${c.label}</th>`;
+                    const cls = c.id === sortCol ? (sortDir === 1 ? " sort-asc" : " sort-desc") : "";
+                    h += `<th data-col="${c.id}" data-side="${side}" class="${cls}" style="${c.align ? "text-align:" + c.align : ""}">${c.label}</th>`;
                 }
                 return h;
-            }
-
-            function cellFor(m, bsMap, key, bgStyle, side) {
-                if (key === "name") {
-                    return `<td style="${bgStyle}text-align:left;color:#ccc;max-width:120px;overflow:hidden;text-overflow:ellipsis" class="tat-cmp-name" data-uid="${m.user_id}" data-name="${m.name || m.user_id}" data-side="${side}">${m.name || m.user_id}</td>`;
-                }
-                if (key === "bs") {
-                    const bs = bsMap.get(m.user_id);
-                    return `<td style="${bgStyle}color:#ffb74d;font-size:11px">${bs?.bs || "—"}</td>`;
-                }
-                if (key === "hours_online") {
-                    return `<td style="${bgStyle}">${m.hours_online}h</td>`;
-                }
-                if (key === "pct_online") {
-                    return `<td style="${bgStyle}color:${m.pct_online > 50 ? "#4caf50" : "#ccc"}">${m.pct_online}%</td>`;
-                }
-                return `<td style="${bgStyle}"></td>`;
             }
 
             function memberCells(m, bsMap, side, selected) {
@@ -1312,7 +1361,8 @@
                 const isSel = selected && selected.has(m.user_id);
                 const bg = isSel ? (side === "left" ? "#1a4a5a" : "#5a1a2a") : "";
                 const bgStyle = bg ? `background:${bg};` : "";
-                return cols.map((c) => cellFor(m, bsMap, c.key, bgStyle, side)).join("");
+                const ctx = buildCtx(bsMap, side, bgStyle);
+                return cols.map((c) => c.cell(m, ctx)).join("");
             }
 
             const selL = container._selLeft instanceof Set ? container._selLeft : new Set();
@@ -1364,6 +1414,8 @@
                     render();
                 });
             });
+
+            renderColToggle();
         }
 
         container._render = render;
@@ -1522,19 +1574,9 @@
                 hintHTML = `<div style="color:#888;font-size:12px;margin-bottom:12px">Click member names to view their heatmaps (multi-select supported). Select an opponent above to compare factions side-by-side.</div>`;
             }
 
-            const currentMobileCol = GM_getValue(STORAGE_KEYS.compareMobileCol)
-                || (GM_getValue(STORAGE_KEYS.ffscouterKey) ? "bs" : "pct_online");
-            const mobileColPickerHTML = `
-                <div class="tat-mobile-col-picker">
-                    <label>Show: Name +</label>
-                    <select id="tat-cmp-mobile-col">
-                        <option value="bs"${currentMobileCol === "bs" ? " selected" : ""}>BS</option>
-                        <option value="hours_online"${currentMobileCol === "hours_online" ? " selected" : ""}>Online hours</option>
-                        <option value="pct_online"${currentMobileCol === "pct_online" ? " selected" : ""}>Online %</option>
-                    </select>
-                </div>`;
+            const colToggleHTML = `<div data-tat-cmp-col-toggle style="display:flex;flex-wrap:wrap;gap:4px;margin:0 0 10px;font-size:11px"></div>`;
 
-            container.innerHTML = `${summaryHTML}${hintHTML}${mobileColPickerHTML}<div id="tat-cmp-tables"></div>`;
+            container.innerHTML = `${summaryHTML}${hintHTML}${colToggleHTML}<div id="tat-cmp-tables"></div>`;
 
             const tablesContainer = document.getElementById("tat-cmp-tables");
             // Seed persisted state onto the freshly created container.
@@ -1543,14 +1585,6 @@
             tablesContainer._selLeft = new Set(selectedLeft.keys());
             tablesContainer._selRight = new Set(selectedRight.keys());
             renderCompareTables(leftData, rightData, tablesContainer, null, null);
-
-            const mobileColSel = document.getElementById("tat-cmp-mobile-col");
-            if (mobileColSel) {
-                mobileColSel.addEventListener("change", () => {
-                    GM_setValue(STORAGE_KEYS.compareMobileCol, mobileColSel.value);
-                    if (tablesContainer._render) tablesContainer._render();
-                });
-            }
 
             // Fetch battle stats from FFScouter (if key set)
             if (GM_getValue(STORAGE_KEYS.ffscouterKey)) {
@@ -2056,17 +2090,17 @@
 
     // ── Recruit tab ──────────────────────────────────────────
 
-    // Stat-min filters: id used in querystring + label.
+    // Stat-min filters: id used in querystring + label. All filters compute
+    // over the last ~7 days of snapshots — totals were dropped in favour of
+    // rates so veterans don't drown short-but-active players out.
     const RECRUIT_STAT_FILTERS = [
-        { id: "minXanax",          label: "Xanax",        width: 70 },
-        { id: "minRefillsEnergy",  label: "Refills E",    width: 70 },
-        { id: "minActivityStreak", label: "Streak",       width: 60 },
-        { id: "minRankedWarHits",  label: "RW hits",      width: 70 },
-        { id: "minAttacksWon",     label: "Atks won",     width: 80 },
-        { id: "minDonatorDays",    label: "Donator d",    width: 70 },
-        { id: "minNetworth",       label: "Networth $",   width: 100 },
-        { id: "minFairFight",      label: "FF",           width: 50, step: "0.01" },
-        { id: "minBsEstimate",     label: "BS",           width: 90 },
+        { id: "minXanaxPerDay",         label: "Xanax/d",      width: 70, step: "0.1" },
+        { id: "minRefillsEnergyPerDay", label: "Refills E/d",  width: 80, step: "0.1" },
+        { id: "minActivityStreak",      label: "Streak",       width: 60 },
+        { id: "minRankedWarHits",       label: "RW hits",      width: 70 },
+        { id: "minDonatorDays",         label: "Donator d",    width: 70 },
+        { id: "minNetworthGrowthPct",   label: "Net Δ%/wk",    width: 80, step: "0.1" },
+        { id: "minBsEstimate",          label: "BS",           width: 90 },
     ];
 
     const RECRUIT_DEFAULTS = {
@@ -2076,7 +2110,6 @@
         minAge: "",
         maxAge: "",
         factionStatus: "none",
-        factionId: "",
         search: "",
         sort: "level",
         sortDir: "desc",
@@ -2116,11 +2149,15 @@
           render: (u) => u.activity_time_sec != null ? fmtCompactNum(Math.round(u.activity_time_sec / 3600)) : "—" },
         { id: "donator",      label: "Donator d",    default: false, sortKey: "donator_days",
           render: (u) => u.donator_days != null ? String(u.donator_days) : "—" },
-        { id: "xanax",        label: "Xanax",        default: true,  sortKey: "xanax",
+        { id: "xanax_per_day", label: "Xanax/d",    default: true,  sortKey: "xanax_per_day",
+          render: (u) => fmtRate(u.xanax_per_day) },
+        { id: "xanax_total",  label: "Xanax (tot)",  default: false, sortKey: null,
           render: (u) => fmtCompactNum(u.xanax_used) },
-        { id: "refills_e",    label: "Refills E",    default: true,  sortKey: "refills_energy",
+        { id: "refills_e_per_day", label: "Refills E/d", default: true, sortKey: "refills_energy_per_day",
+          render: (u) => fmtRate(u.refills_energy_per_day) },
+        { id: "refills_e_total", label: "Refills E (tot)", default: false, sortKey: null,
           render: (u) => fmtCompactNum(u.refills_energy) },
-        { id: "refills_n",    label: "Refills N",    default: false, sortKey: "refills_nerve",
+        { id: "refills_n",    label: "Refills N",    default: false, sortKey: null,
           render: (u) => fmtCompactNum(u.refills_nerve) },
         { id: "rw_hits",      label: "RW hits",      default: true,  sortKey: "ranked_war_hits",
           render: (u) => fmtCompactNum(u.ranked_war_hits) },
@@ -2128,7 +2165,7 @@
           render: (u) => fmtCompactNum(u.raid_hits) },
         { id: "rw_wins",      label: "RW wins",      default: false, sortKey: "ranked_war_wins",
           render: (u) => u.ranked_war_wins != null ? String(u.ranked_war_wins) : "—" },
-        { id: "atk_won",      label: "Atks won",     default: false, sortKey: "attacks_won",
+        { id: "atk_won",      label: "Atks won",     default: false, sortKey: null,
           render: (u) => fmtCompactNum(u.attacks_won) },
         { id: "atk_dmg",      label: "Atk dmg",      default: false, sortKey: "attack_damage",
           render: (u) => fmtCompactNum(u.attack_damage_total) },
@@ -2138,8 +2175,8 @@
           render: (u) => fmtCompactNum(u.faction_respect) },
         { id: "networth",     label: "Networth",     default: true,  sortKey: "networth",
           render: (u) => fmtMoney(u.networth) },
-        { id: "ff",           label: "FF",           default: true,  sortKey: "fair_fight",
-          render: (u) => u.fair_fight != null ? Number(u.fair_fight).toFixed(2) : "—" },
+        { id: "networth_growth", label: "Net Δ%/wk", default: true,  sortKey: "networth_growth_pct",
+          render: (u) => fmtPct(u.networth_growth_pct) },
         { id: "bs",           label: "BS",           default: true,  sortKey: "bs_estimate",
           render: (u) => u.bs_estimate_human || (u.bs_estimate != null ? fmtCompactNum(u.bs_estimate) : "—") },
     ];
@@ -2147,7 +2184,19 @@
     function loadRecruitFilters() {
         const stored = GM_getValue(STORAGE_KEYS.recruitFilters);
         if (!stored || typeof stored !== "object") return { ...RECRUIT_DEFAULTS };
-        return { ...RECRUIT_DEFAULTS, ...stored, offset: 0 };
+        const merged = { ...RECRUIT_DEFAULTS, ...stored, offset: 0 };
+        // Old installs may have stored factionStatus="specific" — backend no
+        // longer accepts that value.
+        if (!["any", "none", "not_mine"].includes(merged.factionStatus)) {
+            merged.factionStatus = RECRUIT_DEFAULTS.factionStatus;
+        }
+        // Sort keys for removed columns (xanax/refills_energy totals,
+        // attacks_won, fair_fight) would 400 the backend — fall back to default.
+        const validSorts = new Set(
+            RECRUIT_COLS.map((c) => c.sortKey).filter(Boolean).concat(["level"]),
+        );
+        if (!validSorts.has(merged.sort)) merged.sort = RECRUIT_DEFAULTS.sort;
+        return merged;
     }
 
     function saveRecruitFilters(f) {
@@ -2159,7 +2208,6 @@
             minAge: f.minAge,
             maxAge: f.maxAge,
             factionStatus: f.factionStatus,
-            factionId: f.factionId,
             search: f.search,
             sort: f.sort,
             sortDir: f.sortDir,
@@ -2217,6 +2265,22 @@
         return "$" + fmtCompactNum(n);
     }
 
+    // Per-day rates can be fractional. Show 1 decimal under 10, integer above.
+    function fmtRate(n) {
+        if (n == null) return "—";
+        const abs = Math.abs(n);
+        if (abs >= 10) return fmtCompactNum(Math.round(n));
+        return n.toFixed(1);
+    }
+
+    // Signed 7-day growth percentage — coloured so green/red signals the trend.
+    function fmtPct(n) {
+        if (n == null) return "—";
+        const sign = n > 0 ? "+" : "";
+        const color = n > 0 ? "#4caf50" : n < 0 ? "#ef5350" : "#aaa";
+        return `<span style="color:${color}">${sign}${n.toFixed(1)}%</span>`;
+    }
+
     async function renderRecruit(el) {
         let filters = loadRecruitFilters();
         let visibleCols = loadRecruitColumns();
@@ -2257,17 +2321,11 @@
                     </select>
                 </label>
                 <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Faction
-                    <span style="display:inline-flex;gap:2px">
-                        <select id="tat-rec-faction-status">
-                            <option value="none"${filters.factionStatus === "none" ? " selected" : ""}>None</option>
-                            <option value="not_mine"${filters.factionStatus === "not_mine" ? " selected" : ""}>Not mine</option>
-                            <option value="any"${filters.factionStatus === "any" ? " selected" : ""}>Any</option>
-                            <option value="specific"${filters.factionStatus === "specific" ? " selected" : ""}>Id…</option>
-                        </select>
-                        <input type="number" id="tat-rec-faction-id" min="1" placeholder="faction id"
-                               value="${filters.factionId}"
-                               style="width:90px;display:${filters.factionStatus === "specific" ? "inline-block" : "none"}">
-                    </span>
+                    <select id="tat-rec-faction-status">
+                        <option value="none"${filters.factionStatus === "none" ? " selected" : ""}>None</option>
+                        <option value="not_mine"${filters.factionStatus === "not_mine" ? " selected" : ""}>Not mine</option>
+                        <option value="any"${filters.factionStatus === "any" ? " selected" : ""}>Any</option>
+                    </select>
                 </label>
                 <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Search
                     <input type="text" id="tat-rec-search" placeholder="name or id" value="${escapeAttr(filters.search || "")}" style="width:130px">
@@ -2278,6 +2336,15 @@
             </div>
 
             <div id="tat-rec-col-toggle" style="display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 10px;font-size:11px"></div>
+
+            <div style="background:#1f2a33;border-left:3px solid #4fc3f7;color:#bbb;padding:8px 12px;margin:0 0 10px;font-size:12px;line-height:1.5;border-radius:3px">
+                <b style="color:#4fc3f7">Heads up:</b> the
+                <b style="color:#ddd">Xanax/d</b>, <b style="color:#ddd">Refills E/d</b>, and
+                <b style="color:#ddd">Net Δ%/wk</b> columns are computed from snapshot history.
+                Most players need <b>7–20 days</b> of polling before their values stabilise —
+                users we just discovered will show <span style="color:#888">—</span>
+                until enough snapshots accumulate.
+            </div>
 
             <div id="tat-rec-status" class="tat-status">Loading candidates...</div>
             <div class="tat-grid-wrap">
@@ -2355,12 +2422,6 @@
             }).join("");
         }
 
-        // Faction-id input visibility tracks the dropdown
-        document.getElementById("tat-rec-faction-status").addEventListener("change", (e) => {
-            document.getElementById("tat-rec-faction-id").style.display =
-                e.target.value === "specific" ? "inline-block" : "none";
-        });
-
         // Submit on Enter from any input/select in the controls bar
         el.querySelector(".tat-grid-controls").addEventListener("keydown", (e) => {
             if (e.key === "Enter") document.getElementById("tat-rec-apply").click();
@@ -2384,7 +2445,6 @@
             });
             if (filters.minAge !== "" && filters.minAge != null) params.set("minAge", String(filters.minAge));
             if (filters.maxAge !== "" && filters.maxAge != null) params.set("maxAge", String(filters.maxAge));
-            if (filters.factionStatus === "specific" && filters.factionId) params.set("factionId", String(filters.factionId));
             if (filters.search && filters.search.trim()) params.set("search", filters.search.trim());
             for (const sf of RECRUIT_STAT_FILTERS) {
                 const v = filters[sf.id];
@@ -2454,8 +2514,6 @@
 
             filters.maxLastActionDays = Number(document.getElementById("tat-rec-active").value) || 7;
             filters.factionStatus = document.getElementById("tat-rec-faction-status").value;
-            const fidRaw = document.getElementById("tat-rec-faction-id").value;
-            filters.factionId = fidRaw === "" ? "" : Math.max(1, Number(fidRaw));
             filters.search = document.getElementById("tat-rec-search").value || "";
 
             for (const sf of RECRUIT_STAT_FILTERS) {
@@ -2500,7 +2558,7 @@
                 ${adminCard("Poll Jobs", `${s.poll_jobs.total} total — ${s.poll_jobs.due_now} due, ${s.poll_jobs.in_flight} in-flight`
                     + `<br><span style="color:#ef5350">Hot: ${s.poll_jobs.hot}</span> · Warm: ${s.poll_jobs.warm} · <span style="color:#666">Cold: ${s.poll_jobs.cold}</span>`)}
                 ${adminCard("Wars", `${s.wars.active} active / ${s.wars.total} total`)}
-                ${adminCard("Snapshots", `${s.activity_snapshots.total_rows.toLocaleString()} rows · ${s.activity_snapshots.distinct_users.toLocaleString()} users · ${s.activity_snapshots.distinct_factions} factions`
+                ${adminCard("Snapshots", `~${s.activity_snapshots.total_rows.toLocaleString()} rows · ${s.activity_snapshots.distinct_users.toLocaleString()} users · ${s.activity_snapshots.distinct_factions} factions`
                     + `<br><span style="color:#666">${s.activity_snapshots.oldest || "—"} → ${s.activity_snapshots.newest || "—"}</span>`)}
                 ${adminCard("API Calls", `${s.api_calls.total} total · ${s.api_calls.last_hour} last hour · <span style="color:${s.api_calls.errors > 0 ? '#ef5350' : '#4caf50'}">${s.api_calls.errors} errors</span>`)}
                 ${adminCard("Members Tracked", `${s.faction_members.toLocaleString()} roster entries`)}
