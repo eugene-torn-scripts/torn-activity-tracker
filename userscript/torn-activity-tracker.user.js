@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.11.0
+// @version      2.12.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.11.0";
+    const VERSION = "2.12.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -1228,9 +1228,11 @@
     // in STORAGE_KEYS.compareColumns and toggleable via the chip row.
     const COMPARE_COLS = [
         { id: "name", label: "Name", fixed: true, align: "left",
+          tooltip: "Member name — click to open a per-user activity heatmap below the table.",
           sortVal: (m) => (m.name || "").toLowerCase(),
           cell: (m, ctx) => `<td style="${ctx.bgStyle}text-align:left;color:#ccc;max-width:120px;overflow:hidden;text-overflow:ellipsis" class="tat-cmp-name" data-uid="${m.user_id}" data-name="${m.name || m.user_id}" data-side="${ctx.side}">${m.name || m.user_id}</td>` },
         { id: "bs", label: "BS", default: true,
+          tooltip: "Battle stats estimate from FFScouter. Requires an FFScouter key in settings.",
           available: (ctx) => ctx.hasBs,
           sortVal: (m, ctx) => parseBS(ctx.bsMap.get(m.user_id)?.bs),
           cell: (m, ctx) => {
@@ -1238,16 +1240,20 @@
               return `<td style="${ctx.bgStyle}color:#ffb74d;font-size:11px">${bs?.bs || "—"}</td>`;
           } },
         { id: "hours_online", label: "On", default: true,
+          tooltip: "Hours the member was observed online during the selected day window.",
           sortVal: (m) => m.hours_online ?? 0,
           cell: (m, ctx) => `<td style="${ctx.bgStyle}">${m.hours_online}h</td>` },
         { id: "pct_online", label: "%", default: true,
+          tooltip: "Share of observed hours where the member was online (online / observed).",
           sortVal: (m) => m.pct_online ?? 0,
           cell: (m, ctx) => `<td style="${ctx.bgStyle}color:${m.pct_online > 50 ? "#4caf50" : "#ccc"}">${m.pct_online}%</td>` },
         { id: "xanax_since_war", label: "Xan/war", default: true,
+          tooltip: "Xanax taken since this war was declared. Torn updates daily at 00:00 TCT — current values refresh once per day.",
           available: (ctx) => ctx.hasWarStats,
           sortVal: (m) => m.xanax_since_war ?? -1,
           cell: (m, ctx) => `<td style="${ctx.bgStyle}color:#ce93d8">${m.xanax_since_war != null ? m.xanax_since_war : "—"}</td>` },
         { id: "overdoses_since_war", label: "OD/war", default: true,
+          tooltip: "Overdoses since this war was declared. Torn's API counts all drugs together — there is no xanax-specific overdose stat.",
           available: (ctx) => ctx.hasWarStats,
           sortVal: (m) => m.overdoses_since_war ?? -1,
           cell: (m, ctx) => `<td style="${ctx.bgStyle}color:${m.overdoses_since_war > 0 ? "#ef5350" : "#aaa"}">${m.overdoses_since_war != null ? m.overdoses_since_war : "—"}</td>` },
@@ -1322,7 +1328,8 @@
             wrap.innerHTML = `<span style="color:#888;align-self:center;margin-right:4px">Columns:</span>` +
                 togglable.map((c) => {
                     const checked = visibleCols[c.id] ? "checked" : "";
-                    return `<label class="tat-col-chip"><input type="checkbox" data-col="${c.id}" ${checked}><span>${c.label}</span></label>`;
+                    const title = c.tooltip ? ` title="${escapeAttr(c.tooltip)}"` : "";
+                    return `<label class="tat-col-chip"${title}><input type="checkbox" data-col="${c.id}" ${checked}><span>${c.label}</span></label>`;
                 }).join("");
             wrap.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
                 cb.addEventListener("change", () => {
@@ -2096,6 +2103,7 @@
     const RECRUIT_STAT_FILTERS = [
         { id: "minXanaxPerDay",         label: "Xanax/d",      width: 70, step: "0.1" },
         { id: "minRefillsEnergyPerDay", label: "Refills E/d",  width: 80, step: "0.1" },
+        { id: "minRwHitsPerWeek",       label: "RW hits/wk",   width: 80, step: "0.1" },
         { id: "minActivityStreak",      label: "Streak",       width: 60 },
         { id: "minRankedWarHits",       label: "RW hits",      width: 70 },
         { id: "minDonatorDays",         label: "Donator d",    width: 70 },
@@ -2121,63 +2129,94 @@
 
     // Column definitions. `fixed` columns are always shown (Name).
     // `default` controls initial visibility. `sortKey` matches the backend's
-    // `sort` enum (null = not sortable).
+    // `sort` enum (null = not sortable). `tooltip` is surfaced on the chip
+    // toggle so users know what each metric means without scrolling docs.
     const RECRUIT_COLS = [
         { id: "name",         label: "Name",         fixed: true,    sortKey: "username",        align: "left",
+          tooltip: "Player name — click to open the Torn profile.",
           render: (u) => `<a href="https://www.torn.com/profiles.php?XID=${u.user_id}" target="_blank" style="color:#4fc3f7;text-decoration:none">${escapeHtml(u.username || "?")}</a>` },
         { id: "id",           label: "ID",           default: false, sortKey: null,
+          tooltip: "Numeric Torn user ID.",
           render: (u) => `<span style="color:#888">${u.user_id}</span>` },
         { id: "lvl",          label: "Lvl",          default: true,  sortKey: "level",
+          tooltip: "Player level.",
           render: (u) => u.level ?? "—" },
         { id: "faction",      label: "Faction",      default: true,  sortKey: null,
+          tooltip: "Current faction ID (click for faction profile). Dash = no faction.",
           render: (u) => u.faction_id
               ? `<a href="https://www.torn.com/factions.php?step=profile&ID=${u.faction_id}" target="_blank" style="color:#8ecae6;text-decoration:none">${u.faction_id}</a>`
               : `<span style="color:#666">—</span>` },
         { id: "last_action",  label: "Last action",  default: true,  sortKey: "last_action",
+          tooltip: "Time since the player was last seen taking any action in Torn.",
           render: (u) => fmtDaysAgo(u.last_action_at) },
         { id: "signed_up",    label: "Signed up",    default: true,  sortKey: "signed_up",
+          tooltip: "Month and year the account was created.",
           render: (u) => `<span style="color:#aaa;font-size:11px">${fmtMonthYear(u.signed_up_at)}</span>` },
         { id: "age",          label: "Age",          default: false, sortKey: "age",
+          tooltip: "Account age in days, from signup to now.",
           render: (u) => u.age_in_days != null ? `${u.age_in_days}d` : "—" },
         { id: "stats_age",    label: "Stats fresh",  default: false, sortKey: null,
+          tooltip: "How long ago we last polled this player's personalstats. Older = rates below may be staler.",
           render: (u) => u.stats_refreshed_at ? fmtDaysAgo(u.stats_refreshed_at) : `<span style="color:#666">—</span>` },
         { id: "streak",       label: "Streak",       default: true,  sortKey: "activity_streak",
+          tooltip: "Current consecutive-day login streak.",
           render: (u) => u.activity_streak_cur != null ? String(u.activity_streak_cur) : "—" },
         { id: "best_streak",  label: "Best streak",  default: false, sortKey: null,
+          tooltip: "All-time longest consecutive-day login streak.",
           render: (u) => u.activity_streak_best != null ? String(u.activity_streak_best) : "—" },
         { id: "play_h",       label: "Play (h)",     default: false, sortKey: "activity_time",
+          tooltip: "Lifetime total hours active in Torn.",
           render: (u) => u.activity_time_sec != null ? fmtCompactNum(Math.round(u.activity_time_sec / 3600)) : "—" },
         { id: "donator",      label: "Donator d",    default: false, sortKey: "donator_days",
+          tooltip: "Lifetime total days as a donator.",
           render: (u) => u.donator_days != null ? String(u.donator_days) : "—" },
         { id: "xanax_per_day", label: "Xanax/d",    default: true,  sortKey: "xanax_per_day",
+          tooltip: "Xanax taken per day, averaged over the past ~7 days from snapshot history.",
           render: (u) => fmtRate(u.xanax_per_day) },
         { id: "xanax_total",  label: "Xanax (tot)",  default: false, sortKey: null,
+          tooltip: "Lifetime total xanax taken.",
           render: (u) => fmtCompactNum(u.xanax_used) },
         { id: "refills_e_per_day", label: "Refills E/d", default: true, sortKey: "refills_energy_per_day",
+          tooltip: "Energy refills used per day, averaged over the past ~7 days from snapshot history.",
           render: (u) => fmtRate(u.refills_energy_per_day) },
         { id: "refills_e_total", label: "Refills E (tot)", default: false, sortKey: null,
+          tooltip: "Lifetime total energy refills used.",
           render: (u) => fmtCompactNum(u.refills_energy) },
         { id: "refills_n",    label: "Refills N",    default: false, sortKey: null,
+          tooltip: "Lifetime total nerve refills used.",
           render: (u) => fmtCompactNum(u.refills_nerve) },
         { id: "rw_hits",      label: "RW hits",      default: true,  sortKey: "ranked_war_hits",
+          tooltip: "Lifetime total ranked-war hits.",
           render: (u) => fmtCompactNum(u.ranked_war_hits) },
+        { id: "rw_hits_per_week", label: "RW hits/wk", default: true, sortKey: "rw_hits_per_week",
+          tooltip: "Ranked-war hits per week, averaged over the past ~7 days from snapshot history.",
+          render: (u) => fmtRate(u.rw_hits_per_week) },
         { id: "raid_hits",    label: "Raid hits",    default: false, sortKey: "raid_hits",
+          tooltip: "Lifetime total raid hits.",
           render: (u) => fmtCompactNum(u.raid_hits) },
         { id: "rw_wins",      label: "RW wins",      default: false, sortKey: "ranked_war_wins",
+          tooltip: "Lifetime total ranked wars won.",
           render: (u) => u.ranked_war_wins != null ? String(u.ranked_war_wins) : "—" },
         { id: "atk_won",      label: "Atks won",     default: false, sortKey: null,
+          tooltip: "Lifetime total attacks won (PvP).",
           render: (u) => fmtCompactNum(u.attacks_won) },
         { id: "atk_dmg",      label: "Atk dmg",      default: false, sortKey: "attack_damage",
+          tooltip: "Lifetime total damage dealt in attacks.",
           render: (u) => fmtCompactNum(u.attack_damage_total) },
         { id: "elo",          label: "ELO",          default: false, sortKey: "elo",
+          tooltip: "Current attack ELO rating.",
           render: (u) => u.elo != null ? String(u.elo) : "—" },
         { id: "fac_resp",     label: "Fac respect",  default: false, sortKey: "faction_respect",
+          tooltip: "Lifetime total respect earned for the player's faction(s).",
           render: (u) => fmtCompactNum(u.faction_respect) },
         { id: "networth",     label: "Networth",     default: true,  sortKey: "networth",
+          tooltip: "Current total networth.",
           render: (u) => fmtMoney(u.networth) },
         { id: "networth_growth", label: "Net Δ%/wk", default: true,  sortKey: "networth_growth_pct",
+          tooltip: "Networth change as a percentage, normalised to a 7-day window from snapshot history.",
           render: (u) => fmtPct(u.networth_growth_pct) },
         { id: "bs",           label: "BS",           default: true,  sortKey: "bs_estimate",
+          tooltip: "Battle stats estimate (from FFScouter).",
           render: (u) => u.bs_estimate_human || (u.bs_estimate != null ? fmtCompactNum(u.bs_estimate) : "—") },
     ];
 
@@ -2339,11 +2378,13 @@
 
             <div style="background:#1f2a33;border-left:3px solid #4fc3f7;color:#bbb;padding:8px 12px;margin:0 0 10px;font-size:12px;line-height:1.5;border-radius:3px">
                 <b style="color:#4fc3f7">Heads up:</b> the
-                <b style="color:#ddd">Xanax/d</b>, <b style="color:#ddd">Refills E/d</b>, and
-                <b style="color:#ddd">Net Δ%/wk</b> columns are computed from snapshot history.
+                <b style="color:#ddd">Xanax/d</b>, <b style="color:#ddd">Refills E/d</b>,
+                <b style="color:#ddd">RW hits/wk</b>, and <b style="color:#ddd">Net Δ%/wk</b>
+                columns are calculated over the <b>past ~7 days</b> from snapshot history
+                (we pick each user's snapshot closest to 7 days ago, capped at 21 days back).
                 Most players need <b>7–20 days</b> of polling before their values stabilise —
                 users we just discovered will show <span style="color:#888">—</span>
-                until enough snapshots accumulate.
+                until enough snapshots accumulate. Hover any column chip for a description.
             </div>
 
             <div id="tat-rec-status" class="tat-status">Loading candidates...</div>
@@ -2362,7 +2403,8 @@
             wrap.innerHTML = `<span style="color:#888;align-self:center;margin-right:4px">Columns:</span>` +
                 RECRUIT_COLS.filter((c) => !c.fixed).map((c) => {
                     const checked = visibleCols[c.id] ? "checked" : "";
-                    return `<label class="tat-col-chip"><input type="checkbox" data-col="${c.id}" ${checked}><span>${escapeHtml(c.label)}</span></label>`;
+                    const title = c.tooltip ? ` title="${escapeAttr(c.tooltip)}"` : "";
+                    return `<label class="tat-col-chip"${title}><input type="checkbox" data-col="${c.id}" ${checked}><span>${escapeHtml(c.label)}</span></label>`;
                 }).join("");
             wrap.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
                 cb.addEventListener("change", () => {
