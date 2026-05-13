@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.12.1
+// @version      2.13.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.12.1";
+    const VERSION = "2.13.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -1482,6 +1482,12 @@
         let lastLeftId = null, lastRightId = null;
         let lastSortCol = "pct_online", lastSortDir = -1;
 
+        // Chosen baseline date for the Xan/war + OD/war columns. null = let
+        // the BE pick the default (= earliest available, "war declared").
+        // Reset whenever the right-side faction changes so opening a new
+        // opponent doesn't carry over a date from the prior comparison.
+        let currentSinceDate = null;
+
         const load = () => {
             const left = Number(document.getElementById("tat-cmp-left").value);
             const rightRaw = Number(document.getElementById("tat-cmp-right").value);
@@ -1514,8 +1520,16 @@
             }
 
             // Per-side selection clears only when that side's faction changes.
-            if (lastLeftId !== null && leftId !== lastLeftId) selectedLeft.clear();
-            if (rightId !== lastRightId) selectedRight.clear();
+            // Changing factions also clears the chosen baseline date so the
+            // new comparison starts on its own war's default.
+            if (lastLeftId !== null && leftId !== lastLeftId) {
+                selectedLeft.clear();
+                currentSinceDate = null;
+            }
+            if (rightId !== lastRightId) {
+                selectedRight.clear();
+                currentSinceDate = null;
+            }
             lastLeftId = leftId;
             lastRightId = rightId;
 
@@ -1531,23 +1545,34 @@
             }
             resetUserCompareCache();
 
-            let leftData, rightData;
+            let leftResp, rightResp;
             try {
+                const sinceParam = currentSinceDate ? `&since=${encodeURIComponent(currentSinceDate)}` : "";
                 if (rightId) {
-                    [leftData, rightData] = await Promise.all([
-                        backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}`),
-                        backendRequest("GET", `/v1/activity/members?faction=${rightId}&days=${days}`),
+                    [leftResp, rightResp] = await Promise.all([
+                        backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}${sinceParam}`),
+                        backendRequest("GET", `/v1/activity/members?faction=${rightId}&days=${days}${sinceParam}`),
                     ]);
                 } else {
-                    leftData = await backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}`);
-                    rightData = null;
+                    leftResp = await backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}${sinceParam}`);
+                    rightResp = null;
                 }
             } catch (err) {
                 container.innerHTML = `<div class="tat-status" style="color:#ef5350">Failed: ${err.error || err.status}</div>`;
                 return;
             }
 
-            compareData = { left: leftData || [], right: rightData || [] };
+            // BE now wraps members + meta. Unwrap defensively in case any
+            // future build serves only the members array.
+            const leftData  = Array.isArray(leftResp)  ? leftResp  : (leftResp?.members  || []);
+            const rightData = rightResp == null ? null
+                : (Array.isArray(rightResp) ? rightResp : (rightResp?.members || []));
+            const leftMeta  = Array.isArray(leftResp)  ? {} : (leftResp?.meta || {});
+            // Adopt the BE's chosen default as the current selection so the
+            // dropdown shows what the response was actually computed against.
+            if (currentSinceDate == null) currentSinceDate = leftMeta.default_since_date ?? null;
+
+            compareData = { left: leftData, right: rightData };
             if (exportBtn) exportBtn.disabled = false;
 
             const lOnline = leftData.reduce((s, m) => s + m.hours_online, 0);
@@ -1583,19 +1608,56 @@
 
             const colToggleHTML = `<div data-tat-cmp-col-toggle style="display:flex;flex-wrap:wrap;gap:4px;margin:0 0 10px;font-size:11px"></div>`;
 
-            // Surface the daily-cadence caveat whenever the war-stat columns
-            // are gated in by the BE — non-war comparisons skip the banner.
-            const hasWarColumns = (leftData && leftData.some((m) => m.xanax_since_war != null))
+            // War-stat dropdown + banner are surfaced only when the BE
+            // indicates an active war for this faction (deltas non-null on
+            // at least one row, OR meta lists an active refresh hour with
+            // no available dates yet).
+            const hasWarColumns = leftData.some((m) => m.xanax_since_war != null)
                 || (rightData && rightData.some((m) => m.xanax_since_war != null));
-            const warBannerHTML = hasWarColumns ? `
+            const availableDates = Array.isArray(leftMeta.available_since_dates) ? leftMeta.available_since_dates : [];
+            const refreshHour = Number.isFinite(leftMeta.refresh_utc_hour) ? leftMeta.refresh_utc_hour : null;
+            const isWarPaired = hasWarColumns || availableDates.length > 0;
+
+            const refreshHourStr = refreshHour != null ? String(refreshHour).padStart(2, "0") + ":00 TCT" : "the daily refresh hour";
+
+            let warBannerHTML = "";
+            let sinceControlHTML = "";
+            if (isWarPaired) {
+                warBannerHTML = `
                 <div style="background:#1f2a33;border-left:3px solid #4fc3f7;color:#bbb;padding:8px 12px;margin:0 0 10px;font-size:12px;line-height:1.5;border-radius:3px">
                     <b style="color:#4fc3f7">Heads up:</b> <b style="color:#ddd">Xan/war</b> and <b style="color:#ddd">OD/war</b>
-                    refresh once a day, after Torn publishes its daily personalstats snapshot — typically several hours
-                    into the new TCT day. Deltas may show <b>0</b> until tomorrow's snapshot rolls over.
+                    refresh once a day at <b style="color:#ddd">${refreshHourStr}</b>, after Torn publishes its daily
+                    personalstats snapshot. Deltas may show <b>0</b> until tomorrow's snapshot rolls over.
                     <b style="color:#ddd">OD/war</b> counts overdoses across all drugs (Torn doesn't expose a xanax-specific stat).
-                </div>` : "";
+                </div>`;
+                if (availableDates.length === 0) {
+                    sinceControlHTML = `
+                        <div style="color:#aaa;font-size:12px;margin:0 0 10px">
+                            No war-stats data collected yet — check after <b style="color:#ddd">${refreshHourStr}</b>.
+                        </div>`;
+                } else {
+                    const opts = availableDates.map((d, i) => {
+                        const label = i === 0 ? `Since ${d} (war declared)` : `Since ${d}`;
+                        const selected = d === currentSinceDate ? " selected" : "";
+                        return `<option value="${d}"${selected}>${label}</option>`;
+                    }).join("");
+                    sinceControlHTML = `
+                        <div style="display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:12px;color:#aaa">
+                            <label for="tat-cmp-since">Xan/war &amp; OD/war baseline:</label>
+                            <select id="tat-cmp-since" style="background:#252525;border:1px solid #444;color:#ddd;padding:4px 6px;border-radius:4px;font-size:12px">${opts}</select>
+                        </div>`;
+                }
+            }
 
-            container.innerHTML = `${summaryHTML}${hintHTML}${warBannerHTML}${colToggleHTML}<div id="tat-cmp-tables"></div>`;
+            container.innerHTML = `${summaryHTML}${hintHTML}${warBannerHTML}${sinceControlHTML}${colToggleHTML}<div id="tat-cmp-tables"></div>`;
+
+            const sinceSel = document.getElementById("tat-cmp-since");
+            if (sinceSel) {
+                sinceSel.addEventListener("change", () => {
+                    currentSinceDate = sinceSel.value;
+                    fetchAndRenderCompare(leftId, rightId, days);
+                });
+            }
 
             const tablesContainer = document.getElementById("tat-cmp-tables");
             // Seed persisted state onto the freshly created container.
