@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.13.0
+// @version      2.13.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.13.0";
+    const VERSION = "2.13.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -2175,14 +2175,22 @@
     // over the last ~7 days of snapshots — totals were dropped in favour of
     // rates so veterans don't drown short-but-active players out.
     const RECRUIT_STAT_FILTERS = [
-        { id: "minXanaxPerDay",         label: "Xanax/d",      width: 70, step: "0.1" },
-        { id: "minRefillsEnergyPerDay", label: "Refills E/d",  width: 80, step: "0.1" },
-        { id: "minRwHitsPerWeek",       label: "RW hits/wk",   width: 80, step: "0.1" },
-        { id: "minActivityStreak",      label: "Streak",       width: 60 },
-        { id: "minRankedWarHits",       label: "RW hits",      width: 70 },
-        { id: "minDonatorDays",         label: "Donator d",    width: 70 },
-        { id: "minNetworthGrowthPct",   label: "Net Δ%/wk",    width: 80, step: "0.1" },
-        { id: "minBsEstimate",          label: "BS",           width: 90 },
+        { id: "minXanaxPerDay",         label: "Xanax/d",      width: 70, step: "0.1",
+          tooltip: "Minimum xanax taken per day, averaged over the past ~7 days from snapshot history." },
+        { id: "minRefillsEnergyPerDay", label: "Refills E/d",  width: 80, step: "0.1",
+          tooltip: "Minimum energy refills used per day, averaged over the past ~7 days from snapshot history." },
+        { id: "minRwHitsPerWeek",       label: "RW hits/wk",   width: 80, step: "0.1",
+          tooltip: "Minimum ranked-war hits per week, averaged over the past ~7 days from snapshot history." },
+        { id: "minActivityStreak",      label: "Streak",       width: 60,
+          tooltip: "Minimum current consecutive-day login streak." },
+        { id: "minRankedWarHits",       label: "RW hits",      width: 70,
+          tooltip: "Minimum lifetime ranked-war hits." },
+        { id: "minDonatorDays",         label: "Donator d",    width: 70,
+          tooltip: "Minimum lifetime days as a donator." },
+        { id: "minNetworthGrowthPct",   label: "Net Δ%/wk",    width: 80, step: "0.1",
+          tooltip: "Minimum networth growth as a percentage, normalised to a 7-day window from snapshot history. Can be negative." },
+        { id: "minBsEstimate",          label: "BS",           width: 90,
+          tooltip: "Minimum battle stats estimate (from FFScouter)." },
     ];
 
     const RECRUIT_DEFAULTS = {
@@ -2309,6 +2317,12 @@
             RECRUIT_COLS.map((c) => c.sortKey).filter(Boolean).concat(["level"]),
         );
         if (!validSorts.has(merged.sort)) merged.sort = RECRUIT_DEFAULTS.sort;
+        // 1d Active window was removed in 2.13.1: HoF last_action_at is
+        // refreshed only weekly, so a 1-day filter returned an empty page
+        // for most of the week. Old installs fall back to the default.
+        if (!new Set([3, 7, 14, 30, 90, 365]).has(merged.maxLastActionDays)) {
+            merged.maxLastActionDays = RECRUIT_DEFAULTS.maxLastActionDays;
+        }
         return merged;
     }
 
@@ -2400,7 +2414,7 @@
 
         // Build stat-filter inputs HTML once
         const statFiltersHTML = RECRUIT_STAT_FILTERS.map((sf) => `
-            <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">
+            <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888"${sf.tooltip ? ` title="${escapeAttr(sf.tooltip)}"` : ""}>
                 ${sf.label}
                 <input type="number" id="tat-rec-${sf.id}" min="0" ${sf.step ? `step="${sf.step}"` : ""}
                        placeholder="min" value="${filters[sf.id] ?? ""}"
@@ -2410,21 +2424,20 @@
 
         el.innerHTML = `
             <div class="tat-grid-controls" style="row-gap:8px;align-items:flex-end">
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Level
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Filter by player level (1–100). Set both min and max to restrict to a level range.">Level
                     <span style="display:inline-flex;gap:2px">
                         <input type="number" id="tat-rec-min-level" min="1" max="100" placeholder="min" value="${filters.minLevel}" style="width:50px">
                         <input type="number" id="tat-rec-max-level" min="1" max="100" placeholder="max" value="${filters.maxLevel}" style="width:50px">
                     </span>
                 </label>
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Age (d)
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Filter by account age in days since signup. Leave blank to include all ages.">Age (d)
                     <span style="display:inline-flex;gap:2px">
                         <input type="number" id="tat-rec-min-age" min="0" placeholder="min" value="${filters.minAge}" style="width:60px">
                         <input type="number" id="tat-rec-max-age" min="0" placeholder="max" value="${filters.maxAge}" style="width:60px">
                     </span>
                 </label>
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Active
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Show only players whose last action falls within this window. Backed by Hall of Fame data that's refreshed once a week, so tighter windows can stay empty until the next crawl.">Active
                     <select id="tat-rec-active">
-                        <option value="1"${filters.maxLastActionDays === 1 ? " selected" : ""}>1d</option>
                         <option value="3"${filters.maxLastActionDays === 3 ? " selected" : ""}>3d</option>
                         <option value="7"${filters.maxLastActionDays === 7 ? " selected" : ""}>7d</option>
                         <option value="14"${filters.maxLastActionDays === 14 ? " selected" : ""}>14d</option>
@@ -2433,14 +2446,14 @@
                         <option value="365"${filters.maxLastActionDays === 365 ? " selected" : ""}>1y</option>
                     </select>
                 </label>
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Faction
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Faction membership filter. None = unfactioned only. Not mine = exclude your own faction's members. Any = no restriction.">Faction
                     <select id="tat-rec-faction-status">
                         <option value="none"${filters.factionStatus === "none" ? " selected" : ""}>None</option>
                         <option value="not_mine"${filters.factionStatus === "not_mine" ? " selected" : ""}>Not mine</option>
                         <option value="any"${filters.factionStatus === "any" ? " selected" : ""}>Any</option>
                     </select>
                 </label>
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888">Search
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Match by username (case-insensitive substring) or numeric Torn user ID.">Search
                     <input type="text" id="tat-rec-search" placeholder="name or id" value="${escapeAttr(filters.search || "")}" style="width:130px">
                 </label>
                 ${statFiltersHTML}
