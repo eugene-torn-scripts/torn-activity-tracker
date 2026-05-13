@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.12.0
+// @version      2.12.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.12.0";
+    const VERSION = "2.12.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -1583,7 +1583,19 @@
 
             const colToggleHTML = `<div data-tat-cmp-col-toggle style="display:flex;flex-wrap:wrap;gap:4px;margin:0 0 10px;font-size:11px"></div>`;
 
-            container.innerHTML = `${summaryHTML}${hintHTML}${colToggleHTML}<div id="tat-cmp-tables"></div>`;
+            // Surface the daily-cadence caveat whenever the war-stat columns
+            // are gated in by the BE — non-war comparisons skip the banner.
+            const hasWarColumns = (leftData && leftData.some((m) => m.xanax_since_war != null))
+                || (rightData && rightData.some((m) => m.xanax_since_war != null));
+            const warBannerHTML = hasWarColumns ? `
+                <div style="background:#1f2a33;border-left:3px solid #4fc3f7;color:#bbb;padding:8px 12px;margin:0 0 10px;font-size:12px;line-height:1.5;border-radius:3px">
+                    <b style="color:#4fc3f7">Heads up:</b> <b style="color:#ddd">Xan/war</b> and <b style="color:#ddd">OD/war</b>
+                    refresh once a day, after Torn publishes its daily personalstats snapshot — typically several hours
+                    into the new TCT day. Deltas may show <b>0</b> until tomorrow's snapshot rolls over.
+                    <b style="color:#ddd">OD/war</b> counts overdoses across all drugs (Torn doesn't expose a xanax-specific stat).
+                </div>` : "";
+
+            container.innerHTML = `${summaryHTML}${hintHTML}${warBannerHTML}${colToggleHTML}<div id="tat-cmp-tables"></div>`;
 
             const tablesContainer = document.getElementById("tat-cmp-tables");
             // Seed persisted state onto the freshly created container.
