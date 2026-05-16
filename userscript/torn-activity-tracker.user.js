@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.15.0
+// @version      2.15.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.15.0";
+    const VERSION = "2.15.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -2171,6 +2171,24 @@
 
     // ── Recruit tab ──────────────────────────────────────────
 
+    // Parse a human-shorthand magnitude ("10m", "3b", "1.5t") into a plain
+    // integer. Used by filter specs whose values can grow into the billions —
+    // typing all the zeros is painful. Empty or unparseable input → "".
+    function parseShorthand(s) {
+        if (s == null) return "";
+        const trimmed = String(s).trim().toLowerCase().replace(/[\s,_]/g, "");
+        if (trimmed === "") return "";
+        const m = trimmed.match(/^([\d.]+)([kmbtq]?)$/);
+        if (!m) {
+            const n = Number(trimmed);
+            return isFinite(n) && n >= 0 ? n : "";
+        }
+        const num = parseFloat(m[1]);
+        if (!isFinite(num) || num < 0) return "";
+        const mult = { "": 1, k: 1e3, m: 1e6, b: 1e9, t: 1e12, q: 1e15 }[m[2]];
+        return Math.round(num * mult);
+    }
+
     // Stat-min filters: id used in querystring + label. The window dropdown
     // (`windowDays`) controls how far back the rate columns look. Lifetime
     // counters (RW hits, BS estimate) and the donator boolean are window-
@@ -2188,8 +2206,10 @@
           tooltip: "Minimum lifetime ranked-war hits." },
         { id: "minNetworthGrowthPct",   label: "Net Δ%/wk",       width: 80, step: "0.1",
           tooltip: "Minimum networth growth as a percentage, normalised to a 7-day rate. Can be negative." },
-        { id: "minBsEstimate",          label: "BS",              width: 90,
-          tooltip: "Minimum battle stats estimate (from FFScouter)." },
+        { id: "minBsEstimate",          label: "BS",              width: 110,
+          inputType: "text", placeholder: "1k, 2m, 3b",
+          parser: parseShorthand,
+          tooltip: "Minimum battle stats estimate (from FFScouter). Accepts shorthand: 1k = 1 000, 10m = 10 000 000, 3b = 3 000 000 000, 4t = 4 trillion." },
     ];
 
     const RECRUIT_DEFAULTS = {
@@ -2406,15 +2426,24 @@
         const inputStyle = "font-size:13px;color:#fff;background:#1a2329;border:1px solid #2a3640;border-radius:3px;padding:3px 6px";
         const inputStyleNum = `${inputStyle};`;
 
-        // Build stat-filter inputs HTML once
-        const statFiltersHTML = RECRUIT_STAT_FILTERS.map((sf) => `
-            <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888"${sf.tooltip ? ` title="${escapeAttr(sf.tooltip)}"` : ""}>
-                ${sf.label}
-                <input type="number" id="tat-rec-${sf.id}" min="0" ${sf.step ? `step="${sf.step}"` : ""}
-                       placeholder="min" value="${filters[sf.id] ?? ""}"
-                       style="${inputStyleNum};width:${sf.width}px">
-            </label>
-        `).join("");
+        // Build stat-filter inputs HTML once. Filters with `parser` accept
+        // human shorthand (10m, 3b, …) and use a text input with a custom
+        // placeholder showing example values.
+        const statFiltersHTML = RECRUIT_STAT_FILTERS.map((sf) => {
+            const type = sf.inputType || "number";
+            const placeholder = sf.placeholder || "min";
+            const numAttrs = type === "number"
+                ? `min="0" ${sf.step ? `step="${sf.step}"` : ""}`
+                : "";
+            return `
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888"${sf.tooltip ? ` title="${escapeAttr(sf.tooltip)}"` : ""}>
+                    ${sf.label}
+                    <input type="${type}" id="tat-rec-${sf.id}" ${numAttrs}
+                           placeholder="${escapeAttr(placeholder)}" value="${escapeAttr(filters[sf.id] ?? "")}"
+                           style="${inputStyleNum};width:${sf.width}px">
+                </label>
+            `;
+        }).join("");
 
         el.innerHTML = `
             <div class="tat-grid-controls" style="row-gap:8px;align-items:flex-end">
@@ -2576,8 +2605,11 @@
             if (filters.donatorOnly) params.set("donatorOnly", "true");
             if (filters.search && filters.search.trim()) params.set("search", filters.search.trim());
             for (const sf of RECRUIT_STAT_FILTERS) {
-                const v = filters[sf.id];
-                if (v !== "" && v != null) params.set(sf.id, String(v));
+                const raw = filters[sf.id];
+                if (raw === "" || raw == null) continue;
+                const v = sf.parser ? sf.parser(raw) : raw;
+                if (v === "" || v == null) continue;
+                params.set(sf.id, String(v));
             }
 
             let data;
@@ -2645,7 +2677,13 @@
             filters.search = document.getElementById("tat-rec-search").value || "";
 
             for (const sf of RECRUIT_STAT_FILTERS) {
-                filters[sf.id] = readNum(`tat-rec-${sf.id}`);
+                // For filters with a parser, store the user's raw text so it
+                // roundtrips on reload. Parsing is deferred to fetch time.
+                if (sf.parser) {
+                    filters[sf.id] = document.getElementById(`tat-rec-${sf.id}`).value.trim();
+                } else {
+                    filters[sf.id] = readNum(`tat-rec-${sf.id}`);
+                }
             }
 
             filters.offset = 0;
