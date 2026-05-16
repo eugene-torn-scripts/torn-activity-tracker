@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.13.1
+// @version      2.14.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.13.1";
+    const VERSION = "2.14.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -2181,6 +2181,8 @@
           tooltip: "Minimum energy refills used per day, averaged over the past ~7 days from snapshot history." },
         { id: "minRwHitsPerWeek",       label: "RW hits/wk",   width: 80, step: "0.1",
           tooltip: "Minimum ranked-war hits per week, averaged over the past ~7 days from snapshot history." },
+        { id: "minActivityMinPerDay",   label: "Activity m/d", width: 80, step: "1",
+          tooltip: "Minimum average minutes online per day, derived from activity_time growth across the full retained snapshot window (up to 30 days)." },
         { id: "minActivityStreak",      label: "Streak",       width: 60,
           tooltip: "Minimum current consecutive-day login streak." },
         { id: "minRankedWarHits",       label: "RW hits",      width: 70,
@@ -2249,6 +2251,11 @@
         { id: "play_h",       label: "Play (h)",     default: false, sortKey: "activity_time",
           tooltip: "Lifetime total hours active in Torn.",
           render: (u) => u.activity_time_sec != null ? fmtCompactNum(Math.round(u.activity_time_sec / 3600)) : "—" },
+        { id: "activity_m_per_day", label: "Activity m/d", default: true, sortKey: "activity_min_per_day",
+          tooltip: "Average minutes online per day, derived from activity_time growth across the full retained snapshot window (up to 30 days). Hover to see the window length.",
+          render: (u) => u.activity_min_per_day != null
+              ? `<span title="${Math.round(u.activity_window_days || 0)}d window">${Math.round(u.activity_min_per_day)}</span>`
+              : `<span style="color:#666">—</span>` },
         { id: "donator",      label: "Donator d",    default: false, sortKey: "donator_days",
           tooltip: "Lifetime total days as a donator.",
           render: (u) => u.donator_days != null ? String(u.donator_days) : "—" },
