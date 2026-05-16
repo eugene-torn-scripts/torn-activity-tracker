@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.15.2
+// @version      2.15.3
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.15.2";
+    const VERSION = "2.15.3";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -2332,10 +2332,11 @@
             RECRUIT_COLS.map((c) => c.sortKey).filter(Boolean).concat(["level"]),
         );
         if (!validSorts.has(merged.sort)) merged.sort = RECRUIT_DEFAULTS.sort;
-        // 1d Active window was removed in 2.13.1: HoF last_action_at is
-        // refreshed only weekly, so a 1-day filter returned an empty page
-        // for most of the week. Old installs fall back to the default.
-        if (!new Set([3, 7, 14, 30, 90, 365]).has(merged.maxLastActionDays)) {
+        // Active window options trimmed in 2.15.3: 30d/90d/1y were removed
+        // because the stats-refresh gate is 7 days — anything wider returned
+        // mostly stale ghosts with frozen metrics. Stored values outside the
+        // current set fall back to the default (7d).
+        if (!new Set([3, 7, 14]).has(merged.maxLastActionDays)) {
             merged.maxLastActionDays = RECRUIT_DEFAULTS.maxLastActionDays;
         }
         return merged;
@@ -2459,14 +2460,11 @@
                 <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Minimum account age in days since signup. Leave blank for no minimum.">Min age (d)
                     <input type="number" id="tat-rec-min-age" min="0" placeholder="—" value="${filters.minAge}" style="${inputStyle};width:80px">
                 </label>
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Show only players whose last action falls within this window. Uses our derived last-active signal (≤24h fresh for tracked users), falling back to weekly Hall-of-Fame data for untracked ones.">Active
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Show only players whose last action falls within this window. Uses our derived last-active signal (≤24h fresh for tracked users), falling back to weekly HoF data for untracked ones. Tighter than 14d isn't useful — the stats-refresh gate is 7 days, so beyond that we stop pulling fresh metrics.">Active
                     <select id="tat-rec-active" style="${inputStyle}">
                         <option value="3"${filters.maxLastActionDays === 3 ? " selected" : ""}>3d</option>
                         <option value="7"${filters.maxLastActionDays === 7 ? " selected" : ""}>7d</option>
                         <option value="14"${filters.maxLastActionDays === 14 ? " selected" : ""}>14d</option>
-                        <option value="30"${filters.maxLastActionDays === 30 ? " selected" : ""}>30d</option>
-                        <option value="90"${filters.maxLastActionDays === 90 ? " selected" : ""}>90d</option>
-                        <option value="365"${filters.maxLastActionDays === 365 ? " selected" : ""}>1y</option>
                     </select>
                 </label>
                 <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="How far back the rate columns (Xanax/d, Refills/d, RW hits/wk, Activity min/day, Donator) look when computing averages. Wider = more stable but slower to react to recent change.">Window
