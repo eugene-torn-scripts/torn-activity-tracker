@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.15.1
+// @version      2.15.2
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.15.1";
+    const VERSION = "2.15.2";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -367,6 +367,12 @@
 .tat-combo-item{padding:6px 10px;cursor:pointer;color:#ddd;font-size:13px;border-bottom:1px solid #2a2a2a}
 .tat-combo-item:last-child{border-bottom:none}
 .tat-combo-item:hover{background:#333;color:#fff}
+
+/* Hide number-input spinners inside the TAT panel — they steal width and
+   no one uses them for filter values. */
+#tat-panel input[type=number]::-webkit-inner-spin-button,
+#tat-panel input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+#tat-panel input[type=number]{-moz-appearance:textfield;appearance:textfield}
 
 /* Mobile */
 @media(max-width:768px){
