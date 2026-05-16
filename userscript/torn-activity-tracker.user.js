@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.14.0
+// @version      2.15.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.14.0";
+    const VERSION = "2.15.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -2171,37 +2171,34 @@
 
     // ── Recruit tab ──────────────────────────────────────────
 
-    // Stat-min filters: id used in querystring + label. All filters compute
-    // over the last ~7 days of snapshots — totals were dropped in favour of
-    // rates so veterans don't drown short-but-active players out.
+    // Stat-min filters: id used in querystring + label. The window dropdown
+    // (`windowDays`) controls how far back the rate columns look. Lifetime
+    // counters (RW hits, BS estimate) and the donator boolean are window-
+    // independent but live next to these for layout convenience.
     const RECRUIT_STAT_FILTERS = [
-        { id: "minXanaxPerDay",         label: "Xanax/d",      width: 70, step: "0.1",
-          tooltip: "Minimum xanax taken per day, averaged over the past ~7 days from snapshot history." },
-        { id: "minRefillsEnergyPerDay", label: "Refills E/d",  width: 80, step: "0.1",
-          tooltip: "Minimum energy refills used per day, averaged over the past ~7 days from snapshot history." },
-        { id: "minRwHitsPerWeek",       label: "RW hits/wk",   width: 80, step: "0.1",
-          tooltip: "Minimum ranked-war hits per week, averaged over the past ~7 days from snapshot history." },
-        { id: "minActivityMinPerDay",   label: "Activity m/d", width: 80, step: "1",
-          tooltip: "Minimum average minutes online per day, derived from activity_time growth across the full retained snapshot window (up to 30 days)." },
-        { id: "minActivityStreak",      label: "Streak",       width: 60,
-          tooltip: "Minimum current consecutive-day login streak." },
-        { id: "minRankedWarHits",       label: "RW hits",      width: 70,
+        { id: "minXanaxPerDay",         label: "Xanax/d",         width: 70, step: "0.1",
+          tooltip: "Minimum xanax taken per day, averaged over the chosen window." },
+        { id: "minRefillsEnergyPerDay", label: "Refills E/d",     width: 80, step: "0.1",
+          tooltip: "Minimum energy refills used per day, averaged over the chosen window." },
+        { id: "minRwHitsPerWeek",       label: "RW hits/wk",      width: 80, step: "0.1",
+          tooltip: "Minimum ranked-war hits per week, averaged over the chosen window." },
+        { id: "minActivityMinPerDay",   label: "Activity min/day", width: 90, step: "1",
+          tooltip: "Minimum average minutes online per day, derived from activity_time growth over the chosen window." },
+        { id: "minRankedWarHits",       label: "RW hits",         width: 70,
           tooltip: "Minimum lifetime ranked-war hits." },
-        { id: "minDonatorDays",         label: "Donator d",    width: 70,
-          tooltip: "Minimum lifetime days as a donator." },
-        { id: "minNetworthGrowthPct",   label: "Net Δ%/wk",    width: 80, step: "0.1",
-          tooltip: "Minimum networth growth as a percentage, normalised to a 7-day window from snapshot history. Can be negative." },
-        { id: "minBsEstimate",          label: "BS",           width: 90,
+        { id: "minNetworthGrowthPct",   label: "Net Δ%/wk",       width: 80, step: "0.1",
+          tooltip: "Minimum networth growth as a percentage, normalised to a 7-day rate. Can be negative." },
+        { id: "minBsEstimate",          label: "BS",              width: 90,
           tooltip: "Minimum battle stats estimate (from FFScouter)." },
     ];
 
     const RECRUIT_DEFAULTS = {
         maxLastActionDays: 7,
-        minLevel: 30,
+        windowDays: 30,
         maxLevel: 100,
         minAge: "",
-        maxAge: "",
         factionStatus: "none",
+        donatorOnly: false,
         search: "",
         sort: "level",
         sortDir: "desc",
@@ -2233,26 +2230,17 @@
         { id: "last_action",  label: "Last action",  default: true,  sortKey: "last_action",
           tooltip: "Time since the player was last seen taking any action in Torn.",
           render: (u) => fmtDaysAgo(u.last_action_at) },
-        { id: "signed_up",    label: "Signed up",    default: true,  sortKey: "signed_up",
-          tooltip: "Month and year the account was created.",
-          render: (u) => `<span style="color:#aaa;font-size:11px">${fmtMonthYear(u.signed_up_at)}</span>` },
         { id: "age",          label: "Age",          default: false, sortKey: "age",
           tooltip: "Account age in days, from signup to now.",
           render: (u) => u.age_in_days != null ? `${u.age_in_days}d` : "—" },
         { id: "stats_age",    label: "Stats fresh",  default: false, sortKey: null,
           tooltip: "How long ago we last polled this player's personalstats. Older = rates below may be staler.",
           render: (u) => u.stats_refreshed_at ? fmtDaysAgo(u.stats_refreshed_at) : `<span style="color:#666">—</span>` },
-        { id: "streak",       label: "Streak",       default: true,  sortKey: "activity_streak",
-          tooltip: "Current consecutive-day login streak.",
-          render: (u) => u.activity_streak_cur != null ? String(u.activity_streak_cur) : "—" },
-        { id: "best_streak",  label: "Best streak",  default: false, sortKey: null,
-          tooltip: "All-time longest consecutive-day login streak.",
-          render: (u) => u.activity_streak_best != null ? String(u.activity_streak_best) : "—" },
         { id: "play_h",       label: "Play (h)",     default: false, sortKey: "activity_time",
           tooltip: "Lifetime total hours active in Torn.",
           render: (u) => u.activity_time_sec != null ? fmtCompactNum(Math.round(u.activity_time_sec / 3600)) : "—" },
-        { id: "activity_m_per_day", label: "Activity m/d", default: true, sortKey: "activity_min_per_day",
-          tooltip: "Average minutes online per day, derived from activity_time growth across the full retained snapshot window (up to 30 days). Hover to see the window length.",
+        { id: "activity_min_per_day", label: "Activity min/day", default: true, sortKey: "activity_min_per_day",
+          tooltip: "Average minutes online per day, derived from activity_time growth over the chosen window. Hover to see the actual data window length (a new user may have less than the chosen window).",
           render: (u) => u.activity_min_per_day != null
               ? `<span title="${Math.round(u.activity_window_days || 0)}d window">${Math.round(u.activity_min_per_day)}</span>`
               : `<span style="color:#666">—</span>` },
@@ -2271,14 +2259,11 @@
         { id: "refills_e_total", label: "Refills E (tot)", default: false, sortKey: null,
           tooltip: "Lifetime total energy refills used.",
           render: (u) => fmtCompactNum(u.refills_energy) },
-        { id: "refills_n",    label: "Refills N",    default: false, sortKey: null,
-          tooltip: "Lifetime total nerve refills used.",
-          render: (u) => fmtCompactNum(u.refills_nerve) },
         { id: "rw_hits",      label: "RW hits",      default: true,  sortKey: "ranked_war_hits",
           tooltip: "Lifetime total ranked-war hits.",
           render: (u) => fmtCompactNum(u.ranked_war_hits) },
         { id: "rw_hits_per_week", label: "RW hits/wk", default: true, sortKey: "rw_hits_per_week",
-          tooltip: "Ranked-war hits per week, averaged over the past ~7 days from snapshot history.",
+          tooltip: "Ranked-war hits per week, averaged over the chosen window.",
           render: (u) => fmtRate(u.rw_hits_per_week) },
         { id: "raid_hits",    label: "Raid hits",    default: false, sortKey: "raid_hits",
           tooltip: "Lifetime total raid hits.",
@@ -2289,20 +2274,17 @@
         { id: "atk_won",      label: "Atks won",     default: false, sortKey: null,
           tooltip: "Lifetime total attacks won (PvP).",
           render: (u) => fmtCompactNum(u.attacks_won) },
-        { id: "atk_dmg",      label: "Atk dmg",      default: false, sortKey: "attack_damage",
-          tooltip: "Lifetime total damage dealt in attacks.",
-          render: (u) => fmtCompactNum(u.attack_damage_total) },
+        { id: "atk_lost",     label: "Atks lost",    default: false, sortKey: null,
+          tooltip: "Lifetime total attacks lost (PvP).",
+          render: (u) => fmtCompactNum(u.attacks_lost) },
         { id: "elo",          label: "ELO",          default: false, sortKey: "elo",
           tooltip: "Current attack ELO rating.",
           render: (u) => u.elo != null ? String(u.elo) : "—" },
-        { id: "fac_resp",     label: "Fac respect",  default: false, sortKey: "faction_respect",
-          tooltip: "Lifetime total respect earned for the player's faction(s).",
-          render: (u) => fmtCompactNum(u.faction_respect) },
         { id: "networth",     label: "Networth",     default: true,  sortKey: "networth",
           tooltip: "Current total networth.",
           render: (u) => fmtMoney(u.networth) },
         { id: "networth_growth", label: "Net Δ%/wk", default: true,  sortKey: "networth_growth_pct",
-          tooltip: "Networth change as a percentage, normalised to a 7-day window from snapshot history.",
+          tooltip: "Networth change as a percentage, normalised to a 7-day rate.",
           render: (u) => fmtPct(u.networth_growth_pct) },
         { id: "bs",           label: "BS",           default: true,  sortKey: "bs_estimate",
           tooltip: "Battle stats estimate (from FFScouter).",
@@ -2337,11 +2319,11 @@
         // Don't persist offset — paging always starts fresh on reopen
         const out = {
             maxLastActionDays: f.maxLastActionDays,
-            minLevel: f.minLevel,
+            windowDays: f.windowDays,
             maxLevel: f.maxLevel,
             minAge: f.minAge,
-            maxAge: f.maxAge,
             factionStatus: f.factionStatus,
+            donatorOnly: f.donatorOnly,
             search: f.search,
             sort: f.sort,
             sortDir: f.sortDir,
@@ -2419,32 +2401,31 @@
         let filters = loadRecruitFilters();
         let visibleCols = loadRecruitColumns();
 
+        // Force a high-contrast colour on filter inputs/selects so a user-
+        // entered value is visually distinct from the dim placeholder text.
+        const inputStyle = "font-size:13px;color:#fff;background:#1a2329;border:1px solid #2a3640;border-radius:3px;padding:3px 6px";
+        const inputStyleNum = `${inputStyle};`;
+
         // Build stat-filter inputs HTML once
         const statFiltersHTML = RECRUIT_STAT_FILTERS.map((sf) => `
             <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888"${sf.tooltip ? ` title="${escapeAttr(sf.tooltip)}"` : ""}>
                 ${sf.label}
                 <input type="number" id="tat-rec-${sf.id}" min="0" ${sf.step ? `step="${sf.step}"` : ""}
                        placeholder="min" value="${filters[sf.id] ?? ""}"
-                       style="width:${sf.width}px;font-size:13px">
+                       style="${inputStyleNum};width:${sf.width}px">
             </label>
         `).join("");
 
         el.innerHTML = `
             <div class="tat-grid-controls" style="row-gap:8px;align-items:flex-end">
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Filter by player level (1–100). Set both min and max to restrict to a level range.">Level
-                    <span style="display:inline-flex;gap:2px">
-                        <input type="number" id="tat-rec-min-level" min="1" max="100" placeholder="min" value="${filters.minLevel}" style="width:50px">
-                        <input type="number" id="tat-rec-max-level" min="1" max="100" placeholder="max" value="${filters.maxLevel}" style="width:50px">
-                    </span>
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Maximum player level (1–100). Defaults to 100 (no upper bound).">Max level
+                    <input type="number" id="tat-rec-max-level" min="1" max="100" placeholder="100" value="${filters.maxLevel}" style="${inputStyle};width:70px">
                 </label>
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Filter by account age in days since signup. Leave blank to include all ages.">Age (d)
-                    <span style="display:inline-flex;gap:2px">
-                        <input type="number" id="tat-rec-min-age" min="0" placeholder="min" value="${filters.minAge}" style="width:60px">
-                        <input type="number" id="tat-rec-max-age" min="0" placeholder="max" value="${filters.maxAge}" style="width:60px">
-                    </span>
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Minimum account age in days since signup. Leave blank for no minimum.">Min age (d)
+                    <input type="number" id="tat-rec-min-age" min="0" placeholder="—" value="${filters.minAge}" style="${inputStyle};width:80px">
                 </label>
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Show only players whose last action falls within this window. Backed by Hall of Fame data that's refreshed once a week, so tighter windows can stay empty until the next crawl.">Active
-                    <select id="tat-rec-active">
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Show only players whose last action falls within this window. Uses our derived last-active signal (≤24h fresh for tracked users), falling back to weekly Hall-of-Fame data for untracked ones.">Active
+                    <select id="tat-rec-active" style="${inputStyle}">
                         <option value="3"${filters.maxLastActionDays === 3 ? " selected" : ""}>3d</option>
                         <option value="7"${filters.maxLastActionDays === 7 ? " selected" : ""}>7d</option>
                         <option value="14"${filters.maxLastActionDays === 14 ? " selected" : ""}>14d</option>
@@ -2453,15 +2434,26 @@
                         <option value="365"${filters.maxLastActionDays === 365 ? " selected" : ""}>1y</option>
                     </select>
                 </label>
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="How far back the rate columns (Xanax/d, Refills/d, RW hits/wk, Activity min/day, Donator) look when computing averages. Wider = more stable but slower to react to recent change.">Window
+                    <select id="tat-rec-window" style="${inputStyle}">
+                        <option value="7"${filters.windowDays === 7 ? " selected" : ""}>1 week</option>
+                        <option value="14"${filters.windowDays === 14 ? " selected" : ""}>2 weeks</option>
+                        <option value="30"${filters.windowDays === 30 ? " selected" : ""}>1 month</option>
+                    </select>
+                </label>
                 <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Faction membership filter. None = unfactioned only. Not mine = exclude your own faction's members. Any = no restriction.">Faction
-                    <select id="tat-rec-faction-status">
+                    <select id="tat-rec-faction-status" style="${inputStyle}">
                         <option value="none"${filters.factionStatus === "none" ? " selected" : ""}>None</option>
                         <option value="not_mine"${filters.factionStatus === "not_mine" ? " selected" : ""}>Not mine</option>
                         <option value="any"${filters.factionStatus === "any" ? " selected" : ""}>Any</option>
                     </select>
                 </label>
+                <label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#bbb;padding-bottom:5px" title="Show only players whose donator_days counter grew within the chosen window — i.e. they're currently a Torn donator.">
+                    <input type="checkbox" id="tat-rec-donator-only" ${filters.donatorOnly ? "checked" : ""}>
+                    Donator
+                </label>
                 <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Match by username (case-insensitive substring) or numeric Torn user ID.">Search
-                    <input type="text" id="tat-rec-search" placeholder="name or id" value="${escapeAttr(filters.search || "")}" style="width:130px">
+                    <input type="text" id="tat-rec-search" placeholder="name or id" value="${escapeAttr(filters.search || "")}" style="${inputStyle};width:140px">
                 </label>
                 ${statFiltersHTML}
                 <button class="tat-btn tat-btn-primary" id="tat-rec-apply" style="padding:6px 14px;font-size:13px">Apply</button>
@@ -2473,12 +2465,13 @@
             <div style="background:#1f2a33;border-left:3px solid #4fc3f7;color:#bbb;padding:8px 12px;margin:0 0 10px;font-size:12px;line-height:1.5;border-radius:3px">
                 <b style="color:#4fc3f7">Heads up:</b> the
                 <b style="color:#ddd">Xanax/d</b>, <b style="color:#ddd">Refills E/d</b>,
-                <b style="color:#ddd">RW hits/wk</b>, and <b style="color:#ddd">Net Δ%/wk</b>
-                columns are calculated over the <b>past ~7 days</b> from snapshot history
-                (we pick each user's snapshot closest to 7 days ago, capped at 21 days back).
-                Most players need <b>7–20 days</b> of polling before their values stabilise —
-                users we just discovered will show <span style="color:#888">—</span>
-                until enough snapshots accumulate. Hover any column chip for a description.
+                <b style="color:#ddd">RW hits/wk</b>, <b style="color:#ddd">Activity min/day</b>,
+                <b style="color:#ddd">Net Δ%/wk</b>, and <b style="color:#ddd">Donator</b> filter
+                are calculated over the <b>Window</b> dropdown (default 1 month).
+                Each user's snapshot closest to that window's start is the baseline,
+                bounded by our 30-day retention. Users we just discovered may show
+                <span style="color:#888">—</span> until two snapshots accumulate.
+                Hover any column chip or filter for a description.
             </div>
 
             <div id="tat-rec-status" class="tat-status">Loading candidates...</div>
@@ -2571,7 +2564,7 @@
 
             const params = new URLSearchParams({
                 maxLastActionDays: String(filters.maxLastActionDays),
-                minLevel: String(filters.minLevel),
+                windowDays: String(filters.windowDays),
                 maxLevel: String(filters.maxLevel),
                 factionStatus: filters.factionStatus,
                 offset: String(filters.offset),
@@ -2580,7 +2573,7 @@
                 sortDir: filters.sortDir,
             });
             if (filters.minAge !== "" && filters.minAge != null) params.set("minAge", String(filters.minAge));
-            if (filters.maxAge !== "" && filters.maxAge != null) params.set("maxAge", String(filters.maxAge));
+            if (filters.donatorOnly) params.set("donatorOnly", "true");
             if (filters.search && filters.search.trim()) params.set("search", filters.search.trim());
             for (const sf of RECRUIT_STAT_FILTERS) {
                 const v = filters[sf.id];
@@ -2640,16 +2633,15 @@
         }
 
         document.getElementById("tat-rec-apply").addEventListener("click", () => {
-            const minLvl = Number(document.getElementById("tat-rec-min-level").value) || RECRUIT_DEFAULTS.minLevel;
             const maxLvl = Number(document.getElementById("tat-rec-max-level").value) || RECRUIT_DEFAULTS.maxLevel;
-            filters.minLevel = Math.max(1, Math.min(100, minLvl));
-            filters.maxLevel = Math.max(filters.minLevel, Math.min(100, maxLvl));
+            filters.maxLevel = Math.max(1, Math.min(100, maxLvl));
 
             filters.minAge = readNum("tat-rec-min-age");
-            filters.maxAge = readNum("tat-rec-max-age");
 
             filters.maxLastActionDays = Number(document.getElementById("tat-rec-active").value) || 7;
+            filters.windowDays = Number(document.getElementById("tat-rec-window").value) || 30;
             filters.factionStatus = document.getElementById("tat-rec-faction-status").value;
+            filters.donatorOnly = document.getElementById("tat-rec-donator-only").checked;
             filters.search = document.getElementById("tat-rec-search").value || "";
 
             for (const sf of RECRUIT_STAT_FILTERS) {
