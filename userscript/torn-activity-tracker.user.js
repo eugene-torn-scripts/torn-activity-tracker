@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.16.0
+// @version      2.16.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.16.0";
+    const VERSION = "2.16.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -1254,10 +1254,12 @@
           sortVal: (m) => m.pct_online ?? 0,
           cell: (m, ctx) => `<td style="${ctx.bgStyle}color:${m.pct_online > 50 ? "#4caf50" : "#ccc"}">${m.pct_online}%</td>` },
         { id: "activity_min_per_day", label: "Act min/d", default: true,
-          tooltip: "Average minutes online per day across the selected window, summed from per-hour active_minutes in our snapshots.",
+          tooltip: "Average minutes online per day, derived from activity_time growth between the oldest and latest personalstats snapshots we have for this member within the selected window. Hover for actual data span. '—' = no personalstats data (very inactive, very new, or not yet enumerated).",
           available: (ctx) => ctx.hasActMinPerDay,
           sortVal: (m) => m.activity_min_per_day ?? -1,
-          cell: (m, ctx) => `<td style="${ctx.bgStyle}">${m.activity_min_per_day != null ? m.activity_min_per_day : "—"}</td>` },
+          cell: (m, ctx) => m.activity_min_per_day != null
+              ? `<td style="${ctx.bgStyle}" title="${Math.round(m.activity_window_days || 0)}d window">${m.activity_min_per_day}</td>`
+              : `<td style="${ctx.bgStyle}color:#666">—</td>` },
         { id: "xanax_since_war", label: "Xan/war", default: true,
           tooltip: "Xanax taken since this war was declared. Torn updates daily at 00:00 TCT — current values refresh once per day.",
           available: (ctx) => ctx.hasWarStats,
