@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.17.3
+// @version      2.18.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.17.3";
+    const VERSION = "2.18.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -1674,12 +1674,12 @@
                     selSet.add(uid);
                 }
                 if (tablesContainer._render) tablesContainer._render();
-                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, leftWars, rightWars);
+                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, leftWars, rightWars, leftId, rightId);
             });
 
             // If selections survived a reload (e.g. days filter changed), refresh heatmaps.
             if (selectedLeft.size || selectedRight.size) {
-                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, leftWars, rightWars);
+                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, leftWars, rightWars, leftId, rightId);
             }
         }
 
@@ -1689,13 +1689,15 @@
     // Per-user heatmap cache for the Compare tab. Reset by resetUserCompareCache()
     // when factions/days change so we never serve stale data.
     const userHoursCache = new Map();
+    const userWarStatsCache = new Map(); // key = `${uid}:${factionId}:${days}`
     let loadUserCompareToken = 0;
     function resetUserCompareCache() {
         userHoursCache.clear();
+        userWarStatsCache.clear();
         loadUserCompareToken++;
     }
 
-    async function loadUserCompare(leftUsers, rightUsers, days, leftWars, rightWars) {
+    async function loadUserCompare(leftUsers, rightUsers, days, leftWars, rightWars, leftFactionId, rightFactionId) {
         const container = document.getElementById("tat-user-compare");
         if (!leftUsers.length && !rightUsers.length) {
             container.style.display = "none";
@@ -1705,24 +1707,41 @@
         container.style.display = "block";
 
         const myToken = ++loadUserCompareToken;
-        const allUsers = [...leftUsers, ...rightUsers];
-        const missing = allUsers.filter((u) => !userHoursCache.has(u.uid));
+        const tagged = [
+            ...leftUsers.map((u) => ({ ...u, factionId: leftFactionId, side: "left" })),
+            ...rightUsers.map((u) => ({ ...u, factionId: rightFactionId, side: "right" })),
+        ];
+        const missingHours = tagged.filter((u) => !userHoursCache.has(u.uid));
+        const warStatsKey = (uid, fid) => `${uid}:${fid}:${days}`;
+        const missingStats = tagged.filter((u) => u.factionId && !userWarStatsCache.has(warStatsKey(u.uid, u.factionId)));
 
         // Only show a loading placeholder on the first paint (empty container).
         // Subsequent clicks keep the prior heatmaps visible while new data fetches —
         // prevents the section from collapsing and jumping the page.
-        if (missing.length && !container.innerHTML.trim()) {
+        if ((missingHours.length || missingStats.length) && !container.innerHTML.trim()) {
             container.innerHTML = `<div class="tat-status" style="margin-top:16px">Loading heatmaps...</div>`;
         }
 
-        if (missing.length) {
+        if (missingHours.length || missingStats.length) {
             try {
-                const results = await Promise.all(missing.map((u) =>
+                const hourFetches = missingHours.map((u) =>
                     backendRequest("GET", `/v1/activity/user-hourly?user=${u.uid}&days=${days}`)
                         .then((hours) => ({ uid: u.uid, hours }))
-                ));
+                );
+                // /user-war-stats is new (added 2.18.0). Older BE 404s — swallow so the
+                // heatmap still renders without the stats line.
+                const statFetches = missingStats.map((u) =>
+                    backendRequest("GET", `/v1/activity/user-war-stats?user=${u.uid}&faction=${u.factionId}&days=${days}`)
+                        .catch(() => null)
+                        .then((stats) => ({ key: warStatsKey(u.uid, u.factionId), stats }))
+                );
+                const [hourResults, statResults] = await Promise.all([
+                    Promise.all(hourFetches),
+                    Promise.all(statFetches),
+                ]);
                 if (myToken !== loadUserCompareToken) return; // superseded by a newer click
-                for (const { uid, hours } of results) userHoursCache.set(uid, hours);
+                for (const { uid, hours } of hourResults) userHoursCache.set(uid, hours);
+                for (const { key, stats } of statResults) userWarStatsCache.set(key, stats);
             } catch (err) {
                 if (myToken !== loadUserCompareToken) return;
                 container.innerHTML = `<div class="tat-status" style="color:#ef5350;margin-top:16px">Failed to load user data.</div>`;
@@ -1751,23 +1770,6 @@
         const sortedDates = [...allDates].sort().reverse();
         const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-        // Reduce wars to clamped [start, end] millisecond intervals usable for
-        // both cell tinting and per-user war-time stats below.
-        function warIntervals(wars) {
-            if (!Array.isArray(wars) || wars.length === 0) return [];
-            const nowMs = Date.now();
-            return wars
-                .map((w) => {
-                    const start = w.started_at ? new Date(w.started_at).getTime() : null;
-                    const end = w.ended_at ? new Date(w.ended_at).getTime() : nowMs;
-                    if (start == null || start > nowMs) return null; // future-scheduled wars
-                    return [start, Math.min(end, nowMs)];
-                })
-                .filter(Boolean);
-        }
-        const intervalsLeft = warIntervals(leftWars);
-        const intervalsRight = warIntervals(rightWars);
-
         function fmtHrMin(min) {
             const m = Math.round(min);
             const h = Math.floor(m / 60);
@@ -1775,37 +1777,27 @@
             return h > 0 ? `${h}h ${r}m` : `${r}m`;
         }
 
-        // Per-user war-time stats: total war duration in the window + the
-        // user's active_minutes summed across hours overlapping any war.
-        // active_minutes is our hourly-snapshot signal (credited online); we
-        // don't have hourly activity_time data to compute true engagement.
-        function userWarStats(uid, intervals) {
-            const totalWarMs = intervals.reduce((s, [a, b]) => s + (b - a), 0);
-            const totalWarMin = totalWarMs / 60000;
-            if (totalWarMin === 0) return null;
-            let activeMin = 0;
-            for (const row of (userHoursCache.get(uid) || [])) {
-                const hStart = new Date(row.hour).getTime();
-                const hEnd = hStart + 3600_000;
-                for (const [s, e] of intervals) {
-                    if (hStart < e && hEnd > s) {
-                        activeMin += row.active || 0;
-                        break;
-                    }
-                }
-            }
-            const pct = totalWarMin > 0 ? (activeMin / totalWarMin) * 100 : 0;
-            return { totalWarMin, activeMin, pct };
-        }
-
         function userHeatmapHTML(name, color, dataMap, isWar, stats) {
-            const statsHTML = stats
-                ? `<span style="color:#888;font-size:11px;margin-left:8px">` +
-                  `War total: <span style="color:#ddd">${fmtHrMin(stats.totalWarMin)}</span>, ` +
-                  `active: <span style="color:#ddd">${fmtHrMin(stats.activeMin)}</span> ` +
-                  `(${Math.round(stats.activeMin)}min, <span style="color:${stats.pct > 50 ? "#69f0ae" : "#ed8c12"}">${stats.pct.toFixed(1)}%</span>)` +
-                  `</span>`
-                : "";
+            // stats = BE /user-war-stats payload: { war_total_min, metric_simple_min,
+            // metric_estimated_min, has_stats_data, war_days_count }. Render only if
+            // there were wars in the window.
+            let statsHTML = "";
+            if (stats && stats.war_total_min > 0) {
+                const total = `<span style="color:#ddd">${fmtHrMin(stats.war_total_min)}</span>`;
+                let activityPart;
+                if (stats.has_stats_data && stats.metric_simple_min != null) {
+                    const simple = `<span style="color:#ddd">${fmtHrMin(stats.metric_simple_min)}</span> (${stats.metric_simple_min}min)`;
+                    const expPart = stats.metric_estimated_min != null
+                        ? ` &middot; <span title="Experimental: simple activity weighted by hourly active_minutes distribution across war hours. See &quot;Granularity&quot; in docs." style="color:#bbb">~${fmtHrMin(stats.metric_estimated_min)} (${stats.metric_estimated_min}min) (exp.)</span>`
+                        : "";
+                    activityPart = `War-day activity: ${simple}${expPart}`;
+                } else {
+                    activityPart = `<span style="color:#777" title="No personalstats history within this war window — wars older than 2026-05-10 pre-date our collection start.">activity: —</span>`;
+                }
+                statsHTML = `<span style="color:#888;font-size:11px;margin-left:8px">` +
+                    `War total: ${total} &middot; ${activityPart}` +
+                    `</span>`;
+            }
             let html = `<div style="margin-bottom:4px"><span style="color:${color};font-weight:600">${name}</span>${statsHTML}</div>`;
             html += `<table class="tat-grid" style="font-size:11px"><thead><tr><th></th>`;
             for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
@@ -1849,13 +1841,13 @@
         const isWarLeft = buildWarMatcher(leftWars);
         const isWarRight = buildWarMatcher(rightWars);
 
-        function sideHTML(users, maps, color, sideTitle, isWar, intervals) {
+        function sideHTML(users, maps, color, sideTitle, isWar, factionId) {
             if (!users.length) return "";
             const header = sideTitle
                 ? `<h4 style="color:${color};font-size:13px;margin:0 0 8px;font-weight:600">${sideTitle}</h4>`
                 : "";
             const items = users.map((u, i) => {
-                const stats = userWarStats(u.uid, intervals);
+                const stats = factionId ? userWarStatsCache.get(warStatsKey(u.uid, factionId)) : null;
                 return `<div class="tat-grid-wrap" style="margin-bottom:12px">${userHeatmapHTML(u.name, color, maps[i], isWar, stats)}</div>`;
             }).join("");
             return `<div style="margin-bottom:16px">${header}${items}</div>`;
@@ -1870,8 +1862,8 @@
         container.innerHTML = `
             <div style="margin-top:16px;padding-top:16px;border-top:1px solid #333">
                 <h3 style="color:#fff;font-size:15px;margin:0 0 12px">${title}</h3>
-                ${sideHTML(leftUsers, leftMaps, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft, intervalsLeft)}
-                ${sideHTML(rightUsers, rightMaps, "#ef5350", bothSides ? "Opponent" : "", isWarRight, intervalsRight)}
+                ${sideHTML(leftUsers, leftMaps, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft, leftFactionId)}
+                ${sideHTML(rightUsers, rightMaps, "#ef5350", bothSides ? "Opponent" : "", isWarRight, rightFactionId)}
                 <div class="tat-legend" style="margin-top:8px">
                     <span>Peace:</span>
                     <span class="tat-legend-box" style="background:#2e7d32"></span> Online
