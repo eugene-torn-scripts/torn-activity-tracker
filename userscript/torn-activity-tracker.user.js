@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.17.0
+// @version      2.17.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.17.0";
+    const VERSION = "2.17.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -343,8 +343,6 @@
 .tat-grid-panel-title{color:#ddd;font-size:13px;font-weight:600;margin:0 0 6px;padding:6px 10px;
   background:#252525;border:1px solid #333;border-radius:4px;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
-.tat-grid td.tat-cell-war{box-shadow:inset 0 0 0 2px #ff9800;position:relative;z-index:2}
-.tat-legend-box-war{box-shadow:inset 0 0 0 2px #ff9800;background:#1a3a2e}
 
 /* Compare layout */
 .tat-cmp-name{cursor:pointer}
@@ -672,15 +670,18 @@
                 </label>
             </div>
             <div class="tat-legend">
-                <span>Activity:</span>
+                <span>Peace:</span>
                 <span class="tat-legend-box" style="background:#1a1a2e"></span> 0%
                 <span class="tat-legend-box" style="background:#1a3a2e"></span> 25%
                 <span class="tat-legend-box" style="background:#2e7d32"></span> 50%
                 <span class="tat-legend-box" style="background:#4caf50"></span> 75%
                 <span class="tat-legend-box" style="background:#69f0ae"></span> 100%
-                <span style="margin-left:12px;display:inline-flex;align-items:center;gap:4px">
-                    <span class="tat-legend-box tat-legend-box-war"></span> War
-                </span>
+                <span style="margin-left:12px">War:</span>
+                <span class="tat-legend-box" style="background:#2e1f1a"></span> 0%
+                <span class="tat-legend-box" style="background:#5a3416"></span> 25%
+                <span class="tat-legend-box" style="background:#bf6a0f"></span> 50%
+                <span class="tat-legend-box" style="background:#ed8c12"></span> 75%
+                <span class="tat-legend-box" style="background:#ffa726"></span> 100%
                 <span style="margin-left:12px;color:#666">All times TCT (UTC)</span>
                 <button class="tat-btn tat-btn-export" id="tat-export-hourly" style="margin-left:auto" disabled>Export CSV</button>
             </div>
@@ -917,19 +918,21 @@
             const dayStartMs = new Date(dateKey + "T00:00:00Z").getTime();
             for (let h = 0; h < 24; h++) {
                 const row = hours[h];
-                const warCls = isWar(dayStartMs + h * 3600_000) ? " tat-cell-war" : "";
+                const war = isWar(dayStartMs + h * 3600_000);
                 if (!row) {
-                    html += `<td class="tat-cell${warCls}" style="background:#111;color:#444">-</td>`;
+                    const bg = war ? "#2e1f1a" : "#111";
+                    html += `<td class="tat-cell" style="background:${bg};color:#444">-</td>`;
                 } else {
                     const { total, activeCount, pct } = rowStats(row, includeIdle);
-                    const bg = heatColor(pct);
+                    const bg = war ? heatColorWar(pct) : heatColor(pct);
                     const textColor = pct > 50 ? "#111" : "#ddd";
                     const label = includeIdle ? "online+idle" : "online";
+                    const ctx = war ? " (war)" : "";
                     const title = metric === "count"
-                        ? `${activeCount}/${total} ${label} (${pct}%)`
-                        : `${pct}% ${label} (${activeCount}/${total})`;
+                        ? `${activeCount}/${total} ${label} (${pct}%)${ctx}`
+                        : `${pct}% ${label} (${activeCount}/${total})${ctx}`;
                     const display = metric === "count" ? String(activeCount) : String(pct);
-                    html += `<td class="tat-cell${warCls}" style="background:${bg};color:${textColor}" title="${title}">${display}</td>`;
+                    html += `<td class="tat-cell" style="background:${bg};color:${textColor}" title="${title}">${display}</td>`;
                 }
             }
             html += `</tr>`;
@@ -953,6 +956,20 @@
         if (pct <= 75) return "#4caf50";
         if (pct <= 90) return "#69f0ae";
         return "#a5d6a7";
+    }
+
+    // Amber ramp for war hours — same intensity scale as the green ramp, just
+    // a different hue so wartime cells are immediately distinguishable from
+    // peacetime activity without obscuring the cell value.
+    function heatColorWar(pct) {
+        if (pct <= 0) return "#2e1f1a";
+        if (pct <= 15) return "#3d2818";
+        if (pct <= 30) return "#5a3416";
+        if (pct <= 45) return "#8a4d10";
+        if (pct <= 60) return "#bf6a0f";
+        if (pct <= 75) return "#ed8c12";
+        if (pct <= 90) return "#ffa726";
+        return "#ffcc80";
     }
 
     let lastSummaryData = null;
