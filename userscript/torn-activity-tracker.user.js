@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.16.1
+// @version      2.17.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,9 +41,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.16.1";
+    const VERSION = "2.17.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
-    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", hourGridCompareView: "tat_hour_grid_compare_view", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
+    const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
     // ═══════════════════════════════════════════════════════════
     //  Performance tracker
@@ -343,9 +343,8 @@
 .tat-grid-panel-title{color:#ddd;font-size:13px;font-weight:600;margin:0 0 6px;padding:6px 10px;
   background:#252525;border:1px solid #333;border-radius:4px;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
-.tat-grid.tat-grid-split td.tat-cell{color:transparent;font-size:0;padding:0;min-width:28px;height:22px}
-.tat-grid .tat-cell-hl{box-shadow:inset 0 0 0 2px #fff;position:relative;z-index:2}
-.tat-grid th.tat-col-hl,.tat-grid td.tat-row-hl{box-shadow:inset 0 0 0 2px #fff}
+.tat-grid td.tat-cell-war{box-shadow:inset 0 0 0 2px #ff9800;position:relative;z-index:2}
+.tat-legend-box-war{box-shadow:inset 0 0 0 2px #ff9800;background:#1a3a2e}
 
 /* Compare layout */
 .tat-cmp-name{cursor:pointer}
@@ -629,6 +628,10 @@
     let lastHourlyDataCmp = null;
     let lastHourlyFactionCmp = null;
     let lastHourlyLabelCmp = null;
+    // Wars overlapping the lookback window for each side. Each item:
+    // { war_id, opponent_faction_id, started_at, ended_at, status }.
+    let lastHourlyWars = null;
+    let lastHourlyWarsCmp = null;
 
     async function renderHourGrid(el) {
         const userInfo = GM_getValue(STORAGE_KEYS.userInfo) || {};
@@ -641,7 +644,6 @@
         const includeIdleInit = GM_getValue(STORAGE_KEYS.hourGridIncludeIdle, false) ? "checked" : "";
         const metricInit = GM_getValue(STORAGE_KEYS.hourGridMetric, "pct");
         const cmpInit = GM_getValue(STORAGE_KEYS.hourGridCompareFaction, "");
-        const viewInit = GM_getValue(STORAGE_KEYS.hourGridCompareView, "stacked");
         el.innerHTML = `
             <div class="tat-grid-controls">
                 <label>Faction:</label>
@@ -651,11 +653,6 @@
                 <label>Compare:</label>
                 <select id="tat-grid-faction-cmp">
                     <option value="">— none —</option>
-                </select>
-                <label id="tat-grid-view-lbl" style="display:none">View:</label>
-                <select id="tat-grid-view" style="display:none">
-                    <option value="stacked"${viewInit === "stacked" ? " selected" : ""}>Stacked</option>
-                    <option value="split"${viewInit === "split" ? " selected" : ""}>Split</option>
                 </select>
                 <label>Days:</label>
                 <select id="tat-grid-days">
@@ -675,19 +672,14 @@
                 </label>
             </div>
             <div class="tat-legend">
-                <span id="tat-legend-label-a">Activity:</span>
+                <span>Activity:</span>
                 <span class="tat-legend-box" style="background:#1a1a2e"></span> 0%
                 <span class="tat-legend-box" style="background:#1a3a2e"></span> 25%
                 <span class="tat-legend-box" style="background:#2e7d32"></span> 50%
                 <span class="tat-legend-box" style="background:#4caf50"></span> 75%
                 <span class="tat-legend-box" style="background:#69f0ae"></span> 100%
-                <span id="tat-legend-red" style="display:none;align-items:center;gap:4px;margin-left:12px">
-                    <span>Opposite:</span>
-                    <span class="tat-legend-box" style="background:#2e1a1a"></span> 0%
-                    <span class="tat-legend-box" style="background:#3a1f1f"></span> 25%
-                    <span class="tat-legend-box" style="background:#a83232"></span> 50%
-                    <span class="tat-legend-box" style="background:#d94b4b"></span> 75%
-                    <span class="tat-legend-box" style="background:#f08a8a"></span> 100%
+                <span style="margin-left:12px;display:inline-flex;align-items:center;gap:4px">
+                    <span class="tat-legend-box tat-legend-box-war"></span> War
                 </span>
                 <span style="margin-left:12px;color:#666">All times TCT (UTC)</span>
                 <button class="tat-btn tat-btn-export" id="tat-export-hourly" style="margin-left:auto" disabled>Export CSV</button>
@@ -732,24 +724,10 @@
             fetchAndRenderGrid(primary, compare, days, labelA, labelB);
         };
 
-        const updateViewToggleVisibility = () => {
-            const cmpOn = !!document.getElementById("tat-grid-faction-cmp").value;
-            const lbl = document.getElementById("tat-grid-view-lbl");
-            const sel = document.getElementById("tat-grid-view");
-            lbl.style.display = cmpOn ? "" : "none";
-            sel.style.display = cmpOn ? "" : "none";
-        };
-        updateViewToggleVisibility();
-
         document.getElementById("tat-grid-faction").addEventListener("change", loadGrid);
         document.getElementById("tat-grid-faction-cmp").addEventListener("change", (e) => {
             GM_setValue(STORAGE_KEYS.hourGridCompareFaction, e.target.value);
-            updateViewToggleVisibility();
             loadGrid();
-        });
-        document.getElementById("tat-grid-view").addEventListener("change", (e) => {
-            GM_setValue(STORAGE_KEYS.hourGridCompareView, e.target.value);
-            renderAllHourlyGrids();
         });
         document.getElementById("tat-grid-days").addEventListener("change", loadGrid);
         document.getElementById("tat-grid-metric").addEventListener("change", (e) => {
@@ -799,19 +777,28 @@
         if (exportBtn) exportBtn.disabled = true;
         lastHourlyData = null;
         lastHourlyDataCmp = null;
+        lastHourlyWars = null;
+        lastHourlyWarsCmp = null;
         lastHourlyFaction = factionId;
         lastHourlyFactionCmp = compareId;
         lastHourlyLabel = labelA;
         lastHourlyLabelCmp = labelB;
 
-        const fetchOne = (id) => backendRequest("GET", `/v1/activity/hourly?faction=${id}&days=${days}`);
+        const fetchHourly = (id) => backendRequest("GET", `/v1/activity/hourly?faction=${id}&days=${days}`);
+        // Wars endpoint is new (added 2.17.0). Older BE returns 404 — swallow
+        // and treat as "no wars" so the heatmap still renders.
+        const fetchWars = (id) => backendRequest("GET", `/v1/activity/wars?faction=${id}&days=${days}`)
+            .catch(() => []);
 
-        let dataA, dataB;
+        let dataA, dataB, warsA, warsB;
         try {
             if (compareId) {
-                [dataA, dataB] = await Promise.all([fetchOne(factionId), fetchOne(compareId)]);
+                [dataA, warsA, dataB, warsB] = await Promise.all([
+                    fetchHourly(factionId), fetchWars(factionId),
+                    fetchHourly(compareId), fetchWars(compareId),
+                ]);
             } else {
-                dataA = await fetchOne(factionId);
+                [dataA, warsA] = await Promise.all([fetchHourly(factionId), fetchWars(factionId)]);
             }
         } catch (err) {
             container.innerHTML = `<div class="tat-status" style="color:#ef5350">Failed to load: ${err.error || err.status}</div>`;
@@ -825,6 +812,8 @@
 
         lastHourlyData = dataA || [];
         lastHourlyDataCmp = dataB || null;
+        lastHourlyWars = warsA || [];
+        lastHourlyWarsCmp = warsB || null;
         if (exportBtn) exportBtn.disabled = !(lastHourlyData && lastHourlyData.length);
         renderAllHourlyGrids();
     }
@@ -833,37 +822,29 @@
         const container = document.getElementById("tat-grid-container");
         if (!container) return;
         const hasCompare = !!lastHourlyDataCmp;
-        const view = document.getElementById("tat-grid-view")?.value || "stacked";
-        const isSplit = hasCompare && view === "split";
 
-        const redLegend = document.getElementById("tat-legend-red");
-        const labelA = document.getElementById("tat-legend-label-a");
-        if (redLegend) redLegend.style.display = isSplit ? "inline-flex" : "none";
-        if (labelA) labelA.textContent = isSplit ? "My faction:" : "Activity:";
-
-        if (isSplit) {
+        // Single scroll container wraps both panels so the two heatmaps slide
+        // horizontally together (matches the Weekday Avg tab pattern). The
+        // inner div min-width forces overflow on narrow screens.
+        if (hasCompare) {
             container.className = "tat-grid-wrap";
-            container.innerHTML = "";
-            renderSplitGridInto(container, lastHourlyData, lastHourlyDataCmp);
-        } else if (hasCompare) {
-            container.className = "";
             container.innerHTML = `
                 <div class="tat-grid-panels">
                     <div class="tat-grid-panel">
                         <div class="tat-grid-panel-title" title="${escapeAttr(lastHourlyLabel || "")}">${escapeHtml(lastHourlyLabel || "")}</div>
-                        <div id="tat-grid-pane-a" class="tat-grid-wrap"></div>
+                        <div id="tat-grid-pane-a"></div>
                     </div>
                     <div class="tat-grid-panel">
                         <div class="tat-grid-panel-title" title="${escapeAttr(lastHourlyLabelCmp || "")}">${escapeHtml(lastHourlyLabelCmp || "")}</div>
-                        <div id="tat-grid-pane-b" class="tat-grid-wrap"></div>
+                        <div id="tat-grid-pane-b"></div>
                     </div>
                 </div>
             `;
-            renderHourlyGridInto(document.getElementById("tat-grid-pane-a"), lastHourlyData);
-            renderHourlyGridInto(document.getElementById("tat-grid-pane-b"), lastHourlyDataCmp);
+            renderHourlyGridInto(document.getElementById("tat-grid-pane-a"), lastHourlyData, lastHourlyWars);
+            renderHourlyGridInto(document.getElementById("tat-grid-pane-b"), lastHourlyDataCmp, lastHourlyWarsCmp);
         } else {
             container.className = "tat-grid-wrap";
-            renderHourlyGridInto(container, lastHourlyData);
+            renderHourlyGridInto(container, lastHourlyData, lastHourlyWars);
         }
     }
 
@@ -889,7 +870,30 @@
         return { total, activeCount, pct };
     }
 
-    function renderHourlyGridInto(paneEl, data) {
+    // Each war is an interval [started_at, ended_at ?? now]. Returns a function
+    // (cellStartMs) => true when the one-hour cell starting at cellStartMs
+    // overlaps any war in the list.
+    function buildWarMatcher(wars) {
+        if (!Array.isArray(wars) || wars.length === 0) return () => false;
+        const nowMs = Date.now();
+        const intervals = wars
+            .map((w) => {
+                const start = w.started_at ? new Date(w.started_at).getTime() : null;
+                const end = w.ended_at ? new Date(w.ended_at).getTime() : nowMs;
+                return start != null ? [start, end] : null;
+            })
+            .filter(Boolean);
+        if (intervals.length === 0) return () => false;
+        return (cellStartMs) => {
+            const cellEnd = cellStartMs + 3600_000;
+            for (const [s, e] of intervals) {
+                if (cellStartMs < e && cellEnd > s) return true;
+            }
+            return false;
+        };
+    }
+
+    function renderHourlyGridInto(paneEl, data, wars) {
         if (!paneEl) return;
         if (!data || data.length === 0) {
             paneEl.innerHTML = `<div class="tat-status">No data.</div>`;
@@ -898,6 +902,7 @@
         const includeIdle = !!document.getElementById("tat-grid-include-idle")?.checked;
         const metric = document.getElementById("tat-grid-metric")?.value || "pct";
         const { byDay, sortedDays } = groupHourlyByDay(data);
+        const isWar = buildWarMatcher(wars);
 
         let html = `<table class="tat-grid"><thead><tr><th></th>`;
         for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
@@ -909,10 +914,12 @@
             const dow = dayNames[new Date(dateKey + "T00:00:00Z").getUTCDay()];
             html += `<tr><td class="tat-day-label">${dow} ${dateKey.slice(5)}</td>`;
             const hours = byDay.get(dateKey);
+            const dayStartMs = new Date(dateKey + "T00:00:00Z").getTime();
             for (let h = 0; h < 24; h++) {
                 const row = hours[h];
+                const warCls = isWar(dayStartMs + h * 3600_000) ? " tat-cell-war" : "";
                 if (!row) {
-                    html += `<td class="tat-cell" style="background:#111;color:#444">-</td>`;
+                    html += `<td class="tat-cell${warCls}" style="background:#111;color:#444">-</td>`;
                 } else {
                     const { total, activeCount, pct } = rowStats(row, includeIdle);
                     const bg = heatColor(pct);
@@ -922,7 +929,7 @@
                         ? `${activeCount}/${total} ${label} (${pct}%)`
                         : `${pct}% ${label} (${activeCount}/${total})`;
                     const display = metric === "count" ? String(activeCount) : String(pct);
-                    html += `<td class="tat-cell" style="background:${bg};color:${textColor}" title="${title}">${display}</td>`;
+                    html += `<td class="tat-cell${warCls}" style="background:${bg};color:${textColor}" title="${title}">${display}</td>`;
                 }
             }
             html += `</tr>`;
@@ -930,69 +937,6 @@
 
         html += `</tbody></table>`;
         paneEl.innerHTML = html;
-    }
-
-    function renderSplitGridInto(paneEl, dataA, dataB) {
-        if (!paneEl) return;
-        const includeIdle = !!document.getElementById("tat-grid-include-idle")?.checked;
-        const metric = document.getElementById("tat-grid-metric")?.value || "pct";
-        const gA = groupHourlyByDay(dataA || []);
-        const gB = groupHourlyByDay(dataB || []);
-        const allDays = [...new Set([...gA.sortedDays, ...gB.sortedDays])].sort().reverse();
-
-        let html = `<table class="tat-grid tat-grid-split"><thead><tr><th></th>`;
-        for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
-        html += `</tr></thead><tbody>`;
-
-        const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-        const missingBg = "#111";
-
-        for (const dateKey of allDays) {
-            const dow = dayNames[new Date(dateKey + "T00:00:00Z").getUTCDay()];
-            html += `<tr><td class="tat-day-label">${dow} ${dateKey.slice(5)}</td>`;
-            const hoursA = gA.byDay.get(dateKey) || new Array(24).fill(null);
-            const hoursB = gB.byDay.get(dateKey) || new Array(24).fill(null);
-            for (let h = 0; h < 24; h++) {
-                const rA = hoursA[h];
-                const rB = hoursB[h];
-                const sA = rA ? rowStats(rA, includeIdle) : null;
-                const sB = rB ? rowStats(rB, includeIdle) : null;
-                const bgA = sA ? heatColor(sA.pct) : missingBg;
-                const bgB = sB ? heatColorRed(sB.pct) : missingBg;
-                const valA = metric === "count" ? (sA ? sA.activeCount : "-") : (sA ? `${sA.pct}%` : "-");
-                const valB = metric === "count" ? (sB ? sB.activeCount : "-") : (sB ? `${sB.pct}%` : "-");
-                const title = `${valA}|${valB}`;
-                const bg = `linear-gradient(135deg, ${bgA} 0 50%, ${bgB} 50% 100%)`;
-                html += `<td class="tat-cell" style="background:${bg}" title="${title}"></td>`;
-            }
-            html += `</tr>`;
-        }
-
-        html += `</tbody></table>`;
-        paneEl.innerHTML = html;
-        attachHighlightListeners(paneEl.querySelector("table.tat-grid"));
-    }
-
-    function attachHighlightListeners(tableEl) {
-        if (!tableEl) return;
-        const headers = tableEl.querySelectorAll("thead tr th");
-        const toggle = (cell, on) => {
-            const row = cell.parentElement;
-            const colIdx = Array.prototype.indexOf.call(row.children, cell);
-            const dayLabel = row.querySelector(".tat-day-label");
-            const method = on ? "add" : "remove";
-            cell.classList[method]("tat-cell-hl");
-            if (dayLabel) dayLabel.classList[method]("tat-row-hl");
-            if (headers[colIdx]) headers[colIdx].classList[method]("tat-col-hl");
-        };
-        tableEl.addEventListener("mouseover", (e) => {
-            const cell = e.target.closest("td.tat-cell");
-            if (cell && tableEl.contains(cell)) toggle(cell, true);
-        });
-        tableEl.addEventListener("mouseout", (e) => {
-            const cell = e.target.closest("td.tat-cell");
-            if (cell && tableEl.contains(cell)) toggle(cell, false);
-        });
     }
 
     function escapeHtml(s) {
@@ -1009,17 +953,6 @@
         if (pct <= 75) return "#4caf50";
         if (pct <= 90) return "#69f0ae";
         return "#a5d6a7";
-    }
-
-    function heatColorRed(pct) {
-        if (pct <= 0) return "#2e1a1a";
-        if (pct <= 15) return "#2e2020";
-        if (pct <= 30) return "#3a1f1f";
-        if (pct <= 45) return "#6e2222";
-        if (pct <= 60) return "#a83232";
-        if (pct <= 75) return "#d94b4b";
-        if (pct <= 90) return "#f08a8a";
-        return "#ffcdd2";
     }
 
     let lastSummaryData = null;
