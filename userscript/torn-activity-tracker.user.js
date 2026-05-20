@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.17.1
+// @version      2.17.2
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.17.1";
+    const VERSION = "2.17.2";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -1510,16 +1510,22 @@
             }
             resetUserCompareCache();
 
-            let leftResp, rightResp;
+            let leftResp, rightResp, leftWars = [], rightWars = [];
             try {
                 const sinceParam = currentSinceDate ? `&since=${encodeURIComponent(currentSinceDate)}` : "";
+                // /wars is best-effort: older BE returns 404 and we still render the rest.
+                const warsCall = (id) => backendRequest("GET", `/v1/activity/wars?faction=${id}&days=${days}`).catch(() => []);
                 if (rightId) {
-                    [leftResp, rightResp] = await Promise.all([
+                    [leftResp, rightResp, leftWars, rightWars] = await Promise.all([
                         backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}${sinceParam}`),
                         backendRequest("GET", `/v1/activity/members?faction=${rightId}&days=${days}${sinceParam}`),
+                        warsCall(leftId), warsCall(rightId),
                     ]);
                 } else {
-                    leftResp = await backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}${sinceParam}`);
+                    [leftResp, leftWars] = await Promise.all([
+                        backendRequest("GET", `/v1/activity/members?faction=${leftId}&days=${days}${sinceParam}`),
+                        warsCall(leftId),
+                    ]);
                     rightResp = null;
                 }
             } catch (err) {
@@ -1668,12 +1674,12 @@
                     selSet.add(uid);
                 }
                 if (tablesContainer._render) tablesContainer._render();
-                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days);
+                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, leftWars, rightWars);
             });
 
             // If selections survived a reload (e.g. days filter changed), refresh heatmaps.
             if (selectedLeft.size || selectedRight.size) {
-                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days);
+                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, leftWars, rightWars);
             }
         }
 
@@ -1689,7 +1695,7 @@
         loadUserCompareToken++;
     }
 
-    async function loadUserCompare(leftUsers, rightUsers, days) {
+    async function loadUserCompare(leftUsers, rightUsers, days, leftWars, rightWars) {
         const container = document.getElementById("tat-user-compare");
         if (!leftUsers.length && !rightUsers.length) {
             container.style.display = "none";
@@ -1745,7 +1751,7 @@
         const sortedDates = [...allDates].sort().reverse();
         const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-        function userHeatmapHTML(name, color, dataMap) {
+        function userHeatmapHTML(name, color, dataMap, isWar) {
             let html = `<div style="margin-bottom:4px"><span style="color:${color};font-weight:600">${name}</span></div>`;
             html += `<table class="tat-grid" style="font-size:11px"><thead><tr><th></th>`;
             for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
@@ -1755,15 +1761,29 @@
                 const dow = dayNames[new Date(dateKey + "T00:00:00Z").getUTCDay()];
                 html += `<tr><td class="tat-day-label">${dow} ${dateKey.slice(5)}</td>`;
                 const hours = dataMap.get(dateKey) || new Array(24).fill(null);
+                const dayStartMs = new Date(dateKey + "T00:00:00Z").getTime();
                 for (let h = 0; h < 24; h++) {
                     const row = hours[h];
+                    const war = isWar(dayStartMs + h * 3600_000);
                     if (!row) {
-                        html += `<td class="tat-cell" style="background:#111;color:#444">-</td>`;
+                        const bg = war ? "#2e1f1a" : "#111";
+                        html += `<td class="tat-cell" style="background:${bg};color:#444">-</td>`;
                     } else {
                         const status = row.active > 0 ? "ON" : row.idle > 0 ? "idl" : "off";
-                        const bg = row.active > 0 ? "#2e7d32" : row.idle > 0 ? "#5d4037" : "#1a1a2e";
-                        const fg = row.active > 0 ? "#69f0ae" : row.idle > 0 ? "#ffab91" : "#555";
-                        html += `<td class="tat-cell" style="background:${bg};color:${fg}" title="${status}">${status}</td>`;
+                        // Swap the green/brown/dark-blue ramp for the amber palette
+                        // during war hours — matches the Hour Grid tab's treatment.
+                        const bg = row.active > 0
+                            ? (war ? "#bf6a0f" : "#2e7d32")
+                            : row.idle > 0
+                                ? (war ? "#5a3416" : "#5d4037")
+                                : (war ? "#2e1f1a" : "#1a1a2e");
+                        const fg = row.active > 0
+                            ? (war ? "#ffcc80" : "#69f0ae")
+                            : row.idle > 0
+                                ? (war ? "#ed8c12" : "#ffab91")
+                                : (war ? "#5a3416" : "#555");
+                        const title = war ? `${status} (war)` : status;
+                        html += `<td class="tat-cell" style="background:${bg};color:${fg}" title="${title}">${status}</td>`;
                     }
                 }
                 html += `</tr>`;
@@ -1772,12 +1792,15 @@
             return html;
         }
 
-        function sideHTML(users, maps, color, sideTitle) {
+        const isWarLeft = buildWarMatcher(leftWars);
+        const isWarRight = buildWarMatcher(rightWars);
+
+        function sideHTML(users, maps, color, sideTitle, isWar) {
             if (!users.length) return "";
             const header = sideTitle
                 ? `<h4 style="color:${color};font-size:13px;margin:0 0 8px;font-weight:600">${sideTitle}</h4>`
                 : "";
-            const items = users.map((u, i) => `<div class="tat-grid-wrap" style="margin-bottom:12px">${userHeatmapHTML(u.name, color, maps[i])}</div>`).join("");
+            const items = users.map((u, i) => `<div class="tat-grid-wrap" style="margin-bottom:12px">${userHeatmapHTML(u.name, color, maps[i], isWar)}</div>`).join("");
             return `<div style="margin-bottom:16px">${header}${items}</div>`;
         }
 
@@ -1790,12 +1813,17 @@
         container.innerHTML = `
             <div style="margin-top:16px;padding-top:16px;border-top:1px solid #333">
                 <h3 style="color:#fff;font-size:15px;margin:0 0 12px">${title}</h3>
-                ${sideHTML(leftUsers, leftMaps, "#4fc3f7", bothSides ? "My faction" : "")}
-                ${sideHTML(rightUsers, rightMaps, "#ef5350", bothSides ? "Opponent" : "")}
+                ${sideHTML(leftUsers, leftMaps, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft)}
+                ${sideHTML(rightUsers, rightMaps, "#ef5350", bothSides ? "Opponent" : "", isWarRight)}
                 <div class="tat-legend" style="margin-top:8px">
+                    <span>Peace:</span>
                     <span class="tat-legend-box" style="background:#2e7d32"></span> Online
                     <span class="tat-legend-box" style="background:#5d4037"></span> Idle
-                    <span class="tat-legend-box" style="background:#1a1a2e"></span> Offline/No data
+                    <span class="tat-legend-box" style="background:#1a1a2e"></span> Offline
+                    <span style="margin-left:12px">War:</span>
+                    <span class="tat-legend-box" style="background:#bf6a0f"></span> Online
+                    <span class="tat-legend-box" style="background:#5a3416"></span> Idle
+                    <span class="tat-legend-box" style="background:#2e1f1a"></span> Offline
                     <span style="margin-left:12px;color:#666">All times TCT (UTC)</span>
                 </div>
             </div>
