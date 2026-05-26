@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.18.0
+// @version      2.19.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.18.0";
+    const VERSION = "2.19.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -654,6 +654,7 @@
                 </select>
                 <label>Days:</label>
                 <select id="tat-grid-days">
+                    <option value="1">1</option>
                     <option value="3">3</option>
                     <option value="7" selected>7</option>
                     <option value="14">14</option>
@@ -1001,6 +1002,8 @@
                 </select>
                 <label>Days:</label>
                 <select id="tat-summary-days">
+                    <option value="1">1</option>
+                    <option value="3">3</option>
                     <option value="7">7</option>
                     <option value="14" selected>14</option>
                     <option value="30">30</option>
@@ -1411,6 +1414,7 @@
                 <select id="tat-cmp-right"><option value="">Select opponent...</option></select>
                 <label>Days:</label>
                 <select id="tat-cmp-days">
+                    <option value="1">1</option>
                     <option value="3">3</option>
                     <option value="7" selected>7</option>
                     <option value="14">14</option>
@@ -2496,15 +2500,19 @@
                 <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Minimum account age in days since signup. Leave blank for no minimum.">Min age (d)
                     <input type="number" id="tat-rec-min-age" min="0" placeholder="—" value="${filters.minAge}" style="${inputStyle};width:80px">
                 </label>
-                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Show only players whose last action falls within this window. Uses our derived last-active signal (≤24h fresh for tracked users), falling back to weekly HoF data for untracked ones. Tighter than 14d isn't useful — the stats-refresh gate is 7 days, so beyond that we stop pulling fresh metrics.">Active
+                <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="Show only players whose last action falls within this window. Uses our derived last-active signal (≤24h fresh for tracked users), falling back to weekly HoF data for untracked ones.">Active
                     <select id="tat-rec-active" style="${inputStyle}">
+                        <option value="1"${filters.maxLastActionDays === 1 ? " selected" : ""}>1d</option>
                         <option value="3"${filters.maxLastActionDays === 3 ? " selected" : ""}>3d</option>
                         <option value="7"${filters.maxLastActionDays === 7 ? " selected" : ""}>7d</option>
                         <option value="14"${filters.maxLastActionDays === 14 ? " selected" : ""}>14d</option>
+                        <option value="30"${filters.maxLastActionDays === 30 ? " selected" : ""}>30d</option>
                     </select>
                 </label>
                 <label style="display:inline-flex;flex-direction:column;font-size:11px;color:#888" title="How far back the rate columns (Xanax/d, Refills/d, RW hits/wk, Activity min/day, Donator) look when computing averages. Wider = more stable but slower to react to recent change.">Window
                     <select id="tat-rec-window" style="${inputStyle}">
+                        <option value="1"${filters.windowDays === 1 ? " selected" : ""}>1 day</option>
+                        <option value="3"${filters.windowDays === 3 ? " selected" : ""}>3 days</option>
                         <option value="7"${filters.windowDays === 7 ? " selected" : ""}>1 week</option>
                         <option value="14"${filters.windowDays === 14 ? " selected" : ""}>2 weeks</option>
                         <option value="30"${filters.windowDays === 30 ? " selected" : ""}>1 month</option>
