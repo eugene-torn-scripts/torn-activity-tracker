@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.20.0
+// @version      2.21.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,8 +41,21 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.20.0";
+    const VERSION = "2.21.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
+
+    // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
+    // "are we inside the PDA webview?" signal (same check SPA/BH/FAT use).
+    // PDA 3.13.x reworked GM_xmlhttpRequest to a native handler and our calls
+    // now hang to a 30s timeout instead of completing. So inside PDA we bypass
+    // GM entirely:
+    //   - backend calls (need an Authorization header) → native fetch(); the BE
+    //     sends CORS for https://www.torn.com and PDA_httpGet can't set headers.
+    //   - FFScouter (third-party, no CORS, key in the URL) → PDA_httpGet, which
+    //     tunnels natively and isn't subject to CORS.
+    // On desktop neither applies: the Torn page CSP blocks fetch to non-torn.com
+    // hosts, so desktop keeps using GM_xmlhttpRequest.
+    const IS_PDA = typeof PDA_httpGet === "function";
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
     // ═══════════════════════════════════════════════════════════
@@ -81,15 +94,39 @@
     function _backendRequestOnce(method, path, body) {
         const apiKey = GM_getValue(STORAGE_KEYS.apiKey);
         const url = `${BACKEND_BASE}${path}`;
+        const headers = {
+            ...(body ? { "Content-Type": "application/json" } : {}),
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        };
         const t0 = performance.now();
+
+        // PDA: native fetch (GM is broken in PDA 3.13.x; BE has CORS). A real
+        // HTTP error (4xx/5xx) is thrown with its numeric status so the retry
+        // loop leaves it alone; a network/CSP failure becomes status 0 so it
+        // retries — matching the GM onerror contract below.
+        if (IS_PDA) {
+            return fetch(url, {
+                method,
+                headers,
+                body: body ? JSON.stringify(body) : undefined,
+            }).then(async (res) => {
+                perfTrack(`${method} ${path} → ${res.status}`, t0);
+                let data = {};
+                try { const txt = await res.text(); if (txt) data = JSON.parse(txt); } catch {}
+                if (res.ok) return data;
+                throw { status: res.status, ...data };
+            }).catch((err) => {
+                if (err && typeof err.status === "number") throw err;
+                perfTrack(`${method} ${path} → ERR`, t0);
+                throw { status: 0, error: "network_error" };
+            });
+        }
+
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method,
                 url,
-                headers: {
-                    ...(body ? { "Content-Type": "application/json" } : {}),
-                    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-                },
+                headers,
                 data: body ? JSON.stringify(body) : undefined,
                 onload: (res) => {
                     perfTrack(`${method} ${path} → ${res.status}`, t0);
@@ -156,20 +193,29 @@
             const chunk = userIds.slice(i, i + 200);
             const url = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(key)}&targets=${chunk.join(",")}`;
             try {
-                const data = await new Promise((resolve, reject) => {
-                    GM_xmlhttpRequest({
-                        method: "GET",
-                        url,
-                        onload: (res) => {
-                            try {
-                                const parsed = JSON.parse(res.responseText);
-                                if (Array.isArray(parsed)) resolve(parsed);
-                                else reject(parsed);
-                            } catch { reject({ error: "parse_error" }); }
-                        },
-                        onerror: (e) => reject(e),
+                // PDA: PDA_httpGet tunnels natively (GM is broken in 3.13.x and
+                // FFScouter sends no CORS, so plain fetch is blocked there). The
+                // key rides in the URL, so no headers are needed. Desktop: GM.
+                const data = IS_PDA
+                    ? await PDA_httpGet(url).then((res) => {
+                        const parsed = JSON.parse(res.responseText);
+                        if (Array.isArray(parsed)) return parsed;
+                        throw parsed;
+                    })
+                    : await new Promise((resolve, reject) => {
+                        GM_xmlhttpRequest({
+                            method: "GET",
+                            url,
+                            onload: (res) => {
+                                try {
+                                    const parsed = JSON.parse(res.responseText);
+                                    if (Array.isArray(parsed)) resolve(parsed);
+                                    else reject(parsed);
+                                } catch { reject({ error: "parse_error" }); }
+                            },
+                            onerror: (e) => reject(e),
+                        });
                     });
-                });
                 for (const p of data) {
                     results.set(p.player_id, {
                         bs: p.bs_estimate_human,
@@ -2016,14 +2062,18 @@
             }
             statusEl.innerHTML = `<span style="color:#aaa">Validating...</span>`;
             try {
-                const res = await new Promise((resolve, reject) => {
-                    GM_xmlhttpRequest({
-                        method: "GET",
-                        url: `https://ffscouter.com/api/v1/check-key?key=${encodeURIComponent(key)}`,
-                        onload: (r) => { try { resolve(JSON.parse(r.responseText)); } catch { reject(); } },
-                        onerror: reject,
+                const checkUrl = `https://ffscouter.com/api/v1/check-key?key=${encodeURIComponent(key)}`;
+                // PDA: PDA_httpGet (GM broken in 3.13.x, FFScouter has no CORS). Desktop: GM.
+                const res = IS_PDA
+                    ? await PDA_httpGet(checkUrl).then((r) => JSON.parse(r.responseText))
+                    : await new Promise((resolve, reject) => {
+                        GM_xmlhttpRequest({
+                            method: "GET",
+                            url: checkUrl,
+                            onload: (r) => { try { resolve(JSON.parse(r.responseText)); } catch { reject(); } },
+                            onerror: reject,
+                        });
                     });
-                });
                 if (res.is_registered) {
                     GM_setValue(STORAGE_KEYS.ffscouterKey, key);
                     document.getElementById("tat-ffs-key").value = "****************";
