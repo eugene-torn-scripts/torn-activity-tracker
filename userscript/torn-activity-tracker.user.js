@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.21.5
+// @version      2.21.6
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -12,7 +12,6 @@
 // @grant        unsafeWindow
 // @connect      torn-tat.duckdns.org
 // @connect      ffscouter.com
-// @connect      *
 // @license      GPL-3.0-or-later
 // @downloadURL  https://update.greasyfork.org/scripts/573936/Torn%20Activity%20Tracker.user.js
 // @updateURL    https://update.greasyfork.org/scripts/573936/Torn%20Activity%20Tracker.meta.js
@@ -41,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.21.5";
+    const VERSION = "2.21.6";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
