@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.21.1
+// @version      2.21.2
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,20 +41,18 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.21.1";
+    const VERSION = "2.21.2";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
     // "are we inside the PDA webview?" signal (same check SPA/BH/FAT use).
-    // PDA 3.13.x reworked GM_xmlhttpRequest to a native handler and our calls
-    // now hang to a 30s timeout instead of completing. So inside PDA we bypass
-    // GM entirely:
-    //   - backend calls (need an Authorization header) → native fetch(); the BE
-    //     sends CORS for https://www.torn.com and PDA_httpGet can't set headers.
-    //   - FFScouter (third-party, no CORS, key in the URL) → PDA_httpGet, which
-    //     tunnels natively and isn't subject to CORS.
-    // On desktop neither applies: the Torn page CSP blocks fetch to non-torn.com
-    // hosts, so desktop keeps using GM_xmlhttpRequest.
+    // PDA 3.13.x reworked GM_xmlhttpRequest to a native handler and our GM calls
+    // now hang to a 30s timeout; native fetch() is CSP-blocked in the webview
+    // (instant "Failed to fetch"). So inside PDA we use the native HTTP bridge
+    // for everything: PDA_httpGet(url, headers) / PDA_httpPost(url, headers, body).
+    // Recent PDA added the optional headers arg, so the Authorization bearer can
+    // ride along. On desktop the bridge doesn't exist and the page CSP blocks
+    // cross-origin fetch, so desktop keeps using GM_xmlhttpRequest.
     const IS_PDA = typeof PDA_httpGet === "function";
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -135,24 +133,31 @@
         };
         const t0 = performance.now();
 
-        // PDA: native fetch (GM is broken in PDA 3.13.x; BE has CORS). A real
-        // HTTP error (4xx/5xx) is thrown with its numeric status so the retry
-        // loop leaves it alone; a network/CSP failure becomes status 0 so it
-        // retries — matching the GM onerror contract below.
+        // PDA: use the native HTTP bridge. GM_xmlhttpRequest hangs in PDA 3.13.x,
+        // and native fetch() is CSP-blocked inside the webview (instant
+        // "Failed to fetch"). PDA_httpGet/PDA_httpPost tunnel through Dart and —
+        // since the recent "PDA_httpGet handler improvements" — accept a headers
+        // object, so we can send the Authorization bearer. The bridge only does
+        // GET/POST, so non-GET methods go through PDA_httpPost (the one PUT,
+        // /settings/rate-limit, now has a POST alias on the BE).
         if (IS_PDA) {
-            return fetch(url, {
-                method,
-                headers,
-                body: body ? JSON.stringify(body) : undefined,
-            }).then(async (res) => {
-                perfTrack(`${method} ${path} → ${res.status}`, t0);
+            const bridge = method === "GET"
+                ? PDA_httpGet(url, headers)
+                : PDA_httpPost(url, headers, body ? JSON.stringify(body) : "");
+            return bridge.then((res) => {
+                const status = (res && typeof res.status === "number") ? res.status : 0;
+                if (status === 0) {
+                    perfTrack(`${method} ${path} → ERR[pda] ${describeError(res)}`, t0);
+                    throw { status: 0, error: "network_error", detail: describeError(res) };
+                }
+                perfTrack(`${method} ${path} → ${status}`, t0);
                 let data = {};
-                try { const txt = await res.text(); if (txt) data = JSON.parse(txt); } catch {}
-                if (res.ok) return data;
-                throw { status: res.status, ...data };
+                try { if (res.responseText) data = JSON.parse(res.responseText); } catch {}
+                if (status >= 200 && status < 300) return data;
+                throw { status, ...data };
             }).catch((err) => {
                 if (err && typeof err.status === "number") throw err;
-                perfTrack(`${method} ${path} → ERR[fetch] ${describeError(err)}`, t0);
+                perfTrack(`${method} ${path} → ERR[pda] ${describeError(err)}`, t0);
                 throw { status: 0, error: "network_error", detail: describeError(err) };
             });
         }
@@ -2068,7 +2073,7 @@
             rateStatus.innerHTML = `<span style="color:#aaa">Saving...</span>`;
             rateTimeout = setTimeout(async () => {
                 try {
-                    await backendRequest("PUT", "/v1/settings/rate-limit", { rate_limit: Number(rateSlider.value) });
+                    await backendRequest("POST", "/v1/settings/rate-limit", { rate_limit: Number(rateSlider.value) });
                     rateStatus.innerHTML = `<span style="color:#4caf50">Saved!</span>`;
                 } catch {
                     rateStatus.innerHTML = `<span style="color:#ef5350">Failed to save.</span>`;
