@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.21.4
+// @version      2.21.5
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,18 +41,20 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.21.4";
+    const VERSION = "2.21.5";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
     // "are we inside the PDA webview?" signal (same check SPA/BH/FAT use).
-    // PDA 3.13.x reworked GM_xmlhttpRequest to a native handler and our GM calls
-    // now hang to a 30s timeout; native fetch() is CSP-blocked in the webview
-    // (instant "Failed to fetch"). So inside PDA we use the native HTTP bridge
-    // for everything: PDA_httpGet(url, headers) / PDA_httpPost(url, headers, body).
-    // Recent PDA added the optional headers arg, so the Authorization bearer can
-    // ride along. On desktop the bridge doesn't exist and the page CSP blocks
-    // cross-origin fetch, so desktop keeps using GM_xmlhttpRequest.
+    // On-device probing settled the transport question:
+    //   - GM_xmlhttpRequest hangs (8s+ timeout) in this PDA build — unusable.
+    //   - native fetch() is CSP-blocked in the webview ("Load failed") — unusable.
+    //   - PDA_httpGet(url, headers) [2-arg] resolves instantly to undefined: this
+    //     build does NOT support the headers arg. The one-arg PDA_httpGet(url)
+    //     works (real promise → {status, responseText}).
+    // So in PDA we use the one-arg bridge and pass the API key as a ?k= query
+    // param (BE accepts it as a bearer fallback). Desktop has no bridge and the
+    // page CSP blocks cross-origin fetch, so desktop keeps GM_xmlhttpRequest.
     const IS_PDA = typeof PDA_httpGet === "function";
     const STORAGE_KEYS = { apiKey: "torn_api_key", userInfo: "torn_user_info", ffscouterKey: "ffscouter_key", debug: "tat_debug", hourGridIncludeIdle: "tat_hour_grid_include_idle", hourGridMetric: "tat_hour_grid_metric", hourGridCompareFaction: "tat_hour_grid_compare_faction", summaryIncludeIdle: "tat_summary_include_idle", compareColumns: "tat_compare_columns", watchlistCache: "tat_watchlist_cache", recruitFilters: "tat_recruit_filters", recruitColumns: "tat_recruit_columns" };
 
@@ -183,14 +185,18 @@
         };
         const t0 = performance.now();
 
-        // PDA: use the native HTTP bridge. GM_xmlhttpRequest hangs in PDA 3.13.x,
-        // and native fetch() is CSP-blocked inside the webview (instant
-        // "Failed to fetch"). PDA_httpGet/PDA_httpPost tunnel through Dart and —
-        // since the recent "PDA_httpGet handler improvements" — accept a headers
-        // object, so we can send the Authorization bearer. The bridge only does
-        // GET/POST, so non-GET methods go through PDA_httpPost (the one PUT,
-        // /settings/rate-limit, now has a POST alias on the BE).
+        // PDA transport. Ruled out on-device (probe): GM_xmlhttpRequest hangs
+        // (8s+), native fetch() is CSP-blocked ("Load failed"), and the two-arg
+        // PDA_httpGet(url, headers) resolves instantly to undefined — this build
+        // does NOT support the headers argument. So we use the proven one-arg
+        // PDA_httpGet(url) / PDA_httpPost(url, headers, body) and send the API key
+        // as a ?k= query param (the BE accepts it as a fallback to the bearer
+        // header). Content-Type still rides PDA_httpPost's headers arg, which is
+        // the original 3-arg form (unaffected by the GET-headers gap).
         if (IS_PDA) {
+            const authedUrl = apiKey
+                ? url + (url.includes("?") ? "&" : "?") + "k=" + encodeURIComponent(apiKey)
+                : url;
             return new Promise((resolve, reject) => {
                 let settled = false;
                 const finish = (fn, arg) => { if (!settled) { settled = true; clearTimeout(watchdog); fn(arg); } };
@@ -205,11 +211,9 @@
                 let bridge;
                 try {
                     bridge = method === "GET"
-                        ? PDA_httpGet(url, headers)
-                        : PDA_httpPost(url, headers, body ? JSON.stringify(body) : "");
+                        ? PDA_httpGet(authedUrl)
+                        : PDA_httpPost(authedUrl, { "Content-Type": "application/json" }, body ? JSON.stringify(body) : "");
                 } catch (e) {
-                    // PDA bridge threw synchronously (e.g. doesn't accept the
-                    // 2-arg/headers form in this build).
                     perfTrack(`${method} ${path} → ERR[pda-call] ${describeError(e)}`, t0);
                     finish(reject, { status: 0, error: "pda_call_threw", detail: describeError(e) });
                     return;
