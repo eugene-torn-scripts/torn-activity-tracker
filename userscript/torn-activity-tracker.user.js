@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.21.3
+// @version      2.21.4
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.21.3";
+    const VERSION = "2.21.4";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -106,44 +106,53 @@
         probeTransports();
     }
 
-    // One-time transport probe (debug only). Fires the SAME no-auth request
-    // (/health) through every available transport at once and logs which ones
-    // actually work and how fast. This is how we decide whether PDA can simply
-    // reuse the desktop GM path (preferred) or needs the native bridge — instead
-    // of guessing. Each attempt is capped at 8s so a hang reports as a timeout.
+    // Render an object's own keys/values compactly for the log (no nesting).
+    function dumpObj(o) {
+        if (o === null) return "null";
+        if (o === undefined) return "undefined";
+        if (typeof o !== "object") return `${typeof o}:${String(o).slice(0, 60)}`;
+        try {
+            const keys = Object.keys(o);
+            if (keys.length === 0) return "{} (no own keys)";
+            return "{" + keys.slice(0, 15).map((k) => {
+                let v = o[k];
+                if (typeof v === "string") v = `"${v.slice(0, 40)}"`;
+                else if (v && typeof v === "object") v = "{obj}";
+                return `${k}:${v}`;
+            }).join(", ") + "}";
+        } catch (e) { return "dump_failed:" + describeError(e); }
+    }
+
+    // One-time PDA bridge shape probe (debug only). GM hangs and fetch is
+    // CSP-blocked on PDA (already confirmed), so PDA_httpGet is the only option —
+    // but its return shape on this build isn't the documented {status,responseText}.
+    // Dump exactly what it returns (sync type, is it a promise, resolved keys)
+    // so we read the right fields instead of guessing.
     let _probed = false;
     function probeTransports() {
         if (_probed || !GM_getValue(STORAGE_KEYS.debug)) return;
         _probed = true;
+        if (typeof PDA_httpGet !== "function") { debugLog("probe: PDA_httpGet not a function"); return; }
         const url = `${BACKEND_BASE}/health`;
-        const cap = (label, p) => {
+
+        // Probe both call shapes against /health (no auth needed). Dump the sync
+        // return type and the resolved object's keys for each, so we can tell
+        // whether the headers arg is what breaks it on this build.
+        const run = (label, makeCall) => {
+            let ret;
+            try { ret = makeCall(); }
+            catch (e) { debugLog(`probe ${label}: sync threw ${describeError(e)}`); return; }
+            const thenable = !!(ret && typeof ret.then === "function");
+            debugLog(`probe ${label}: sync typeof=${typeof ret} thenable=${thenable}${thenable ? "" : " value=" + dumpObj(ret)}`);
+            if (!thenable) return;
             const t0 = performance.now();
-            let to;
-            const timeout = new Promise((_, rej) => { to = setTimeout(() => rej(new Error("timeout(8s)")), 8000); });
-            Promise.race([p, timeout])
-                .then((status) => { clearTimeout(to); debugLog(`probe ${label}: OK ${status} ${Math.round(performance.now() - t0)}ms`); })
-                .catch((e) => { clearTimeout(to); debugLog(`probe ${label}: ERR ${describeError(e)} ${Math.round(performance.now() - t0)}ms`); });
+            const to = setTimeout(() => debugLog(`probe ${label}: resolve TIMEOUT 8s`), 8000);
+            ret.then((res) => { clearTimeout(to); debugLog(`probe ${label} resolved ${Math.round(performance.now() - t0)}ms: ${dumpObj(res)}`); })
+               .catch((e) => { clearTimeout(to); debugLog(`probe ${label} rejected: ${describeError(e)}`); });
         };
 
-        if (typeof GM_xmlhttpRequest === "function") {
-            cap("gm", new Promise((resolve, reject) => {
-                try {
-                    GM_xmlhttpRequest({
-                        method: "GET", url,
-                        onload: (r) => resolve(r && r.status),
-                        onerror: () => reject(new Error("onerror")),
-                        ontimeout: () => reject(new Error("ontimeout")),
-                    });
-                } catch (e) { reject(e); }
-            }));
-        }
-        if (typeof PDA_httpGet === "function") {
-            cap("pda(url,headers)", (async () => { const r = await PDA_httpGet(url, {}); return r && r.status; })());
-            cap("pda(url)", (async () => { const r = await PDA_httpGet(url); return r && r.status; })());
-        }
-        if (typeof fetch === "function") {
-            cap("fetch", fetch(url).then((r) => r.status));
-        }
+        run("pda-nohdr", () => PDA_httpGet(url));
+        run("pda-hdr", () => PDA_httpGet(url, { Authorization: "Bearer probe" }));
     }
 
     // Long task observer — detects >50ms main-thread blocks
