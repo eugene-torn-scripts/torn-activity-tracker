@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.21.0
+// @version      2.21.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.21.0";
+    const VERSION = "2.21.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -70,6 +70,41 @@
         const ms = Math.round(performance.now() - startTime);
         perfLog.push({ ts: new Date().toISOString().slice(11, 19), label, ms });
         if (perfLog.length > MAX_PERF_LOG) perfLog.shift();
+    }
+
+    // Push a plain diagnostic line (ms 0) into the same debug log perfTrack uses.
+    function debugLog(label) {
+        if (!GM_getValue(STORAGE_KEYS.debug)) return;
+        perfLog.push({ ts: new Date().toISOString().slice(11, 19), label, ms: 0 });
+        if (perfLog.length > MAX_PERF_LOG) perfLog.shift();
+    }
+
+    // Turn any thrown value into a short, human-readable cause for the log.
+    // fetch() rejects with a TypeError (e.g. "Failed to fetch") when blocked by
+    // CSP / cross-origin policy; GM onerror passes an object with error/statusText.
+    function describeError(err) {
+        if (err == null) return "unknown";
+        if (err instanceof Error) return `${err.name}: ${err.message}`;
+        if (typeof err === "object") {
+            if (err.status != null && err.status !== 0) {
+                return `HTTP ${err.status}${err.error ? " " + err.error : ""}`;
+            }
+            const bits = [err.error, err.statusText, err.message, err.readyState != null ? `rs=${err.readyState}` : null]
+                .filter(Boolean);
+            if (bits.length) return bits.join(" ");
+            try { return JSON.stringify(err).slice(0, 140); } catch { return String(err); }
+        }
+        return String(err);
+    }
+
+    // One-time environment snapshot — the single most useful line for diagnosing
+    // PDA vs desktop transport problems. Logged on the first backend request.
+    let _envLogged = false;
+    function logEnvOnce() {
+        if (_envLogged) return;
+        _envLogged = true;
+        debugLog(`env: PDA=${IS_PDA} fetch=${typeof fetch} PDA_httpGet=${typeof PDA_httpGet} GM_xhr=${typeof GM_xmlhttpRequest} base=${BACKEND_BASE} v${VERSION}`);
+        debugLog(`env: ua=${(navigator.userAgent || "").slice(0, 90)}`);
     }
 
     // Long task observer — detects >50ms main-thread blocks
@@ -117,8 +152,8 @@
                 throw { status: res.status, ...data };
             }).catch((err) => {
                 if (err && typeof err.status === "number") throw err;
-                perfTrack(`${method} ${path} → ERR`, t0);
-                throw { status: 0, error: "network_error" };
+                perfTrack(`${method} ${path} → ERR[fetch] ${describeError(err)}`, t0);
+                throw { status: 0, error: "network_error", detail: describeError(err) };
             });
         }
 
@@ -135,7 +170,8 @@
                     if (res.status >= 200 && res.status < 300) resolve(data);
                     else reject({ status: res.status, ...data });
                 },
-                onerror: () => { perfTrack(`${method} ${path} → ERR`, t0); reject({ status: 0, error: "network_error" }); },
+                onerror: (e) => { perfTrack(`${method} ${path} → ERR[gm] ${describeError(e)}`, t0); reject({ status: 0, error: "network_error" }); },
+                ontimeout: () => { perfTrack(`${method} ${path} → ERR[gm] timeout`, t0); reject({ status: 0, error: "timeout" }); },
             });
         });
     }
@@ -144,6 +180,7 @@
     // rejects with ERR 0ms under concurrent load — desktop is fine. Only retry
     // status 0 (no response); real HTTP errors (4xx/5xx) fall straight through.
     async function backendRequest(method, path, body) {
+        logEnvOnce();
         const backoffs = [0, 300, 800];
         let lastErr;
         for (let attempt = 0; attempt < backoffs.length; attempt++) {
