@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.21.2
+// @version      2.21.3
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -41,7 +41,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.21.2";
+    const VERSION = "2.21.3";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -103,6 +103,47 @@
         _envLogged = true;
         debugLog(`env: PDA=${IS_PDA} fetch=${typeof fetch} PDA_httpGet=${typeof PDA_httpGet} GM_xhr=${typeof GM_xmlhttpRequest} base=${BACKEND_BASE} v${VERSION}`);
         debugLog(`env: ua=${(navigator.userAgent || "").slice(0, 90)}`);
+        probeTransports();
+    }
+
+    // One-time transport probe (debug only). Fires the SAME no-auth request
+    // (/health) through every available transport at once and logs which ones
+    // actually work and how fast. This is how we decide whether PDA can simply
+    // reuse the desktop GM path (preferred) or needs the native bridge — instead
+    // of guessing. Each attempt is capped at 8s so a hang reports as a timeout.
+    let _probed = false;
+    function probeTransports() {
+        if (_probed || !GM_getValue(STORAGE_KEYS.debug)) return;
+        _probed = true;
+        const url = `${BACKEND_BASE}/health`;
+        const cap = (label, p) => {
+            const t0 = performance.now();
+            let to;
+            const timeout = new Promise((_, rej) => { to = setTimeout(() => rej(new Error("timeout(8s)")), 8000); });
+            Promise.race([p, timeout])
+                .then((status) => { clearTimeout(to); debugLog(`probe ${label}: OK ${status} ${Math.round(performance.now() - t0)}ms`); })
+                .catch((e) => { clearTimeout(to); debugLog(`probe ${label}: ERR ${describeError(e)} ${Math.round(performance.now() - t0)}ms`); });
+        };
+
+        if (typeof GM_xmlhttpRequest === "function") {
+            cap("gm", new Promise((resolve, reject) => {
+                try {
+                    GM_xmlhttpRequest({
+                        method: "GET", url,
+                        onload: (r) => resolve(r && r.status),
+                        onerror: () => reject(new Error("onerror")),
+                        ontimeout: () => reject(new Error("ontimeout")),
+                    });
+                } catch (e) { reject(e); }
+            }));
+        }
+        if (typeof PDA_httpGet === "function") {
+            cap("pda(url,headers)", (async () => { const r = await PDA_httpGet(url, {}); return r && r.status; })());
+            cap("pda(url)", (async () => { const r = await PDA_httpGet(url); return r && r.status; })());
+        }
+        if (typeof fetch === "function") {
+            cap("fetch", fetch(url).then((r) => r.status));
+        }
     }
 
     // Long task observer — detects >50ms main-thread blocks
@@ -141,24 +182,53 @@
         // GET/POST, so non-GET methods go through PDA_httpPost (the one PUT,
         // /settings/rate-limit, now has a POST alias on the BE).
         if (IS_PDA) {
-            const bridge = method === "GET"
-                ? PDA_httpGet(url, headers)
-                : PDA_httpPost(url, headers, body ? JSON.stringify(body) : "");
-            return bridge.then((res) => {
-                const status = (res && typeof res.status === "number") ? res.status : 0;
-                if (status === 0) {
-                    perfTrack(`${method} ${path} → ERR[pda] ${describeError(res)}`, t0);
-                    throw { status: 0, error: "network_error", detail: describeError(res) };
+            return new Promise((resolve, reject) => {
+                let settled = false;
+                const finish = (fn, arg) => { if (!settled) { settled = true; clearTimeout(watchdog); fn(arg); } };
+                // Watchdog: if the bridge never settles, surface it instead of
+                // hanging the UI forever (the old GM bug). 20s is well under the
+                // perceived "stuck" threshold but long enough for a slow tunnel.
+                const watchdog = setTimeout(() => {
+                    perfTrack(`${method} ${path} → ERR[pda-timeout]`, t0);
+                    finish(reject, { status: 0, error: "pda_timeout" });
+                }, 20000);
+
+                let bridge;
+                try {
+                    bridge = method === "GET"
+                        ? PDA_httpGet(url, headers)
+                        : PDA_httpPost(url, headers, body ? JSON.stringify(body) : "");
+                } catch (e) {
+                    // PDA bridge threw synchronously (e.g. doesn't accept the
+                    // 2-arg/headers form in this build).
+                    perfTrack(`${method} ${path} → ERR[pda-call] ${describeError(e)}`, t0);
+                    finish(reject, { status: 0, error: "pda_call_threw", detail: describeError(e) });
+                    return;
                 }
-                perfTrack(`${method} ${path} → ${status}`, t0);
-                let data = {};
-                try { if (res.responseText) data = JSON.parse(res.responseText); } catch {}
-                if (status >= 200 && status < 300) return data;
-                throw { status, ...data };
-            }).catch((err) => {
-                if (err && typeof err.status === "number") throw err;
-                perfTrack(`${method} ${path} → ERR[pda] ${describeError(err)}`, t0);
-                throw { status: 0, error: "network_error", detail: describeError(err) };
+                // Normalise: some builds may return undefined / a non-promise.
+                // Promise.resolve(undefined) → res undefined → logged as a typed error.
+                Promise.resolve(bridge).then((res) => {
+                    if (settled) return;
+                    if (res == null || typeof res !== "object") {
+                        perfTrack(`${method} ${path} → ERR[pda-shape] returned typeof=${typeof bridge}, res=${typeof res}`, t0);
+                        finish(reject, { status: 0, error: "pda_bad_shape" });
+                        return;
+                    }
+                    const status = typeof res.status === "number" ? res.status : 0;
+                    if (status === 0) {
+                        perfTrack(`${method} ${path} → ERR[pda] ${describeError(res)}`, t0);
+                        finish(reject, { status: 0, error: "network_error", detail: describeError(res) });
+                        return;
+                    }
+                    perfTrack(`${method} ${path} → ${status}`, t0);
+                    let data = {};
+                    try { if (res.responseText) data = JSON.parse(res.responseText); } catch {}
+                    if (status >= 200 && status < 300) finish(resolve, data);
+                    else finish(reject, { status, ...data });
+                }).catch((err) => {
+                    perfTrack(`${method} ${path} → ERR[pda] ${describeError(err)}`, t0);
+                    finish(reject, { status: 0, error: "network_error", detail: describeError(err) });
+                });
             });
         }
 
