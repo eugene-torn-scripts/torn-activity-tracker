@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.21.7
+// @version      2.22.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.21.7";
+    const VERSION = "2.22.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -344,6 +344,33 @@
         }
     }
 
+    /**
+     * Re-sync stored userInfo (faction_id, name, is_admin) from the backend.
+     * These are captured once at register time and go stale when the user
+     * changes faction or renames. GET /v1/auth/me refreshes them from Torn
+     * (throttled server-side), so the "My faction" UI self-heals on panel open
+     * without the user having to log out and re-register.
+     *
+     * @returns {Promise<boolean>} true if stored userInfo changed
+     */
+    async function syncUserInfo() {
+        if (!isAuthenticated()) return false;
+        try {
+            const fresh = await backendRequest("GET", "/v1/auth/me");
+            if (!hasValidUserInfo(fresh)) return false;
+            const prev = GM_getValue(STORAGE_KEYS.userInfo) || {};
+            if (prev.faction_id === fresh.faction_id
+                && prev.name === fresh.name
+                && prev.is_admin === fresh.is_admin) {
+                return false;
+            }
+            GM_setValue(STORAGE_KEYS.userInfo, fresh);
+            return true;
+        } catch {
+            return false; // offline / transient — keep stored userInfo
+        }
+    }
+
     async function register(apiKey) {
         GM_setValue(STORAGE_KEYS.apiKey, apiKey);
         try {
@@ -588,6 +615,16 @@
 
         renderTabs();
         renderContent();
+
+        // Non-blocking: refresh faction/name from the backend and re-render if
+        // it drifted (e.g. user changed faction since registering). Renders the
+        // stale value for a beat, then corrects itself.
+        syncUserInfo().then((changed) => {
+            if (changed && panelOpen) {
+                renderTabs();
+                renderContent();
+            }
+        });
     }
 
     function renderTabs() {
