@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.22.0
+// @version      2.22.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.22.0";
+    const VERSION = "2.22.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -479,8 +479,8 @@
 .tat-grid th{color:#999;font-weight:600;background:#222;position:sticky;top:0}
 .tat-grid td.tat-cell{min-width:28px;font-variant-numeric:tabular-nums;font-size:11px;color:#fff}
 .tat-grid .tat-day-label{text-align:right;color:#aaa;font-size:12px;background:#1a1a1a;min-width:80px}
-.tat-legend{display:flex;align-items:center;gap:4px;font-size:11px;color:#888;margin:8px 0}
-.tat-legend-box{width:14px;height:14px;border-radius:2px;border:1px solid #444}
+.tat-legend{display:flex;flex-wrap:wrap;align-items:center;gap:4px;font-size:11px;color:#888;margin:8px 0}
+.tat-legend-box{width:14px;height:14px;border-radius:2px;border:1px solid #444;flex:0 0 auto}
 .tat-grid-controls{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
 .tat-grid-controls select,.tat-grid-controls input{background:#252525;border:1px solid #444;color:#ddd;
   padding:5px 8px;border-radius:4px;font-size:13px}
@@ -528,6 +528,9 @@
   .tat-grid th,.tat-grid td{padding:2px 3px}
   .tat-grid td.tat-cell{min-width:18px;font-size:10px}
   .tat-grid .tat-day-label{min-width:52px;font-size:10px}
+  .tat-legend{gap:3px 6px;font-size:10px}
+  .tat-legend-box{width:12px;height:12px}
+  .tat-legend .tat-btn-export{margin-left:0!important}
 }
 `;
         document.head.appendChild(style);
