@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      2.22.1
+// @version      3.0.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.22.1";
+    const VERSION = "3.0.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -2936,8 +2936,8 @@
                 ${adminCard("Poll Jobs", `${s.poll_jobs.total} total — ${s.poll_jobs.due_now} due, ${s.poll_jobs.in_flight} in-flight`
                     + `<br><span style="color:#ef5350">Hot: ${s.poll_jobs.hot}</span> · Warm: ${s.poll_jobs.warm} · <span style="color:#666">Cold: ${s.poll_jobs.cold}</span>`)}
                 ${adminCard("Wars", `${s.wars.active} active / ${s.wars.total} total`)}
-                ${adminCard("Snapshots", `~${s.activity_snapshots.total_rows.toLocaleString()} rows · ${s.activity_snapshots.distinct_users.toLocaleString()} users · ${s.activity_snapshots.distinct_factions} factions`
-                    + `<br><span style="color:#666">${s.activity_snapshots.oldest || "—"} → ${s.activity_snapshots.newest || "—"}</span>`)}
+                ${adminCard("Activity", `~${(s.activity_daily?.total_rows ?? 0).toLocaleString()} day-rows · ${(s.activity_daily?.distinct_users ?? 0).toLocaleString()} users · ${s.activity_daily?.distinct_factions ?? 0} factions`
+                    + `<br><span style="color:#666">${s.activity_daily?.oldest || "—"} → ${s.activity_daily?.newest || "—"} · ${s.activity_daily?.retention_days ?? "?"}d retention</span>`)}
                 ${adminCard("API Calls", `${s.api_calls.total} total · ${s.api_calls.last_hour} last hour · <span style="color:${s.api_calls.errors > 0 ? '#ef5350' : '#4caf50'}">${s.api_calls.errors} errors</span>`)}
                 ${adminCard("Members Tracked", `${s.faction_members.toLocaleString()} roster entries`)}
                 ${adminCard("Server", `CPU: ${s.server.load_avg.join(" / ")} (${s.server.cpu_count} cores)`
@@ -2952,23 +2952,6 @@
                     if (db.tables.length) h += db.tables.map((t) => `<span style="color:#888;font-size:11px">${t.table}: ${t.size_mb}MB</span>`).join(" · ");
                     return h;
                 })())}
-            </div>
-
-            <div style="background:#252525;border:1px solid #333;border-radius:8px;padding:10px 14px;margin-bottom:16px">
-                <div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Activity Data Source (you only)</div>
-                <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
-                    <select id="tat-activity-source" style="background:#1c1c1c;border:1px solid #444;color:#ddd;padding:4px 8px;border-radius:4px;font-size:13px">
-                        <option value="legacy">Legacy (hourly snapshots)</option>
-                        <option value="new">New (5-min bitmap store)</option>
-                    </select>
-                    <span id="tat-activity-source-status" style="color:#888;font-size:12px"></span>
-                </div>
-                <div style="color:#666;font-size:11px;margin-top:6px">
-                    Switches only your reads between the two stores. Everyone else stays on Legacy.
-                    New store: ~${(s.activity_daily?.total_rows ?? 0).toLocaleString()} rows ·
-                    write ${s.activity_daily?.write_enabled ? "on" : "off"} ·
-                    ${s.activity_daily?.retention_days ?? "?"}d retention.
-                </div>
             </div>
 
             <h3 style="color:#fff;font-size:15px;margin:16px 0 8px">Factions by Division</h3>
@@ -3009,38 +2992,9 @@
         loadAdminUsers();
         loadAdminJobs();
         loadAdminLogs();
-        loadActivitySourceToggle();
 
         document.getElementById("tat-log-level").addEventListener("change", loadAdminLogs);
         document.getElementById("tat-log-refresh").addEventListener("click", loadAdminLogs);
-    }
-
-    // Activity-source toggle (admin only). Reads/writes the per-user setting on
-    // the backend; changing it flips ONLY this user between the legacy hourly
-    // store and the new 5-minute bitmap store. Everyone else is unaffected.
-    async function loadActivitySourceToggle() {
-        const sel = document.getElementById("tat-activity-source");
-        const status = document.getElementById("tat-activity-source-status");
-        if (!sel) return;
-        try {
-            const cur = await backendRequest("GET", "/v1/admin/activity-source");
-            sel.value = cur.source === "new" ? "new" : "legacy";
-        } catch {
-            if (status) status.textContent = "(failed to load current source)";
-        }
-        sel.addEventListener("change", async () => {
-            const source = sel.value;
-            if (status) status.textContent = "Saving…";
-            sel.disabled = true;
-            try {
-                await backendRequest("POST", "/v1/admin/activity-source", { source });
-                if (status) status.textContent = `Now reading: ${source === "new" ? "New (5-min)" : "Legacy"}. Reopen a tab to see it.`;
-            } catch (err) {
-                if (status) status.textContent = `Failed: ${err.error || err.status || "error"}`;
-            } finally {
-                sel.disabled = false;
-            }
-        });
     }
 
     async function loadAdminLogs() {
