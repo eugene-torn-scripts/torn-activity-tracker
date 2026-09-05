@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      3.0.0
+// @version      3.1.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "3.0.0";
+    const VERSION = "3.1.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -2928,18 +2928,25 @@
 
         const s = stats;
         const divLabels = { 0: "Unranked", 1: "Bronze", 2: "Silver", 3: "Gold", 4: "Platinum", 5: "Diamond" };
+        const NA = `<span style="color:#ef5350">unavailable</span>`;
+        const num = (v) => (v == null ? "—" : Number(v).toLocaleString());
+        const byDivision = s.factions?.by_division ?? [];
 
         el.innerHTML = `
+            ${s.partial ? `<div style="background:#3a2a1a;border:1px solid #ffb74d;border-radius:6px;padding:8px 12px;margin-bottom:12px;color:#ffb74d;font-size:12px">
+                Partial data — ${s.errors.length} of the stats queries failed: ${s.errors.map((e) => `${e.section} (${e.error})`).join(", ")}
+            </div>` : ""}
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-                ${adminCard("Users", `${s.users.active} active / ${s.users.total} total`)}
-                ${adminCard("Factions", `${s.factions.alive} alive / ${s.factions.total} total (${s.factions.ranked} ranked)`)}
-                ${adminCard("Poll Jobs", `${s.poll_jobs.total} total — ${s.poll_jobs.due_now} due, ${s.poll_jobs.in_flight} in-flight`
-                    + `<br><span style="color:#ef5350">Hot: ${s.poll_jobs.hot}</span> · Warm: ${s.poll_jobs.warm} · <span style="color:#666">Cold: ${s.poll_jobs.cold}</span>`)}
-                ${adminCard("Wars", `${s.wars.active} active / ${s.wars.total} total`)}
-                ${adminCard("Activity", `~${(s.activity_daily?.total_rows ?? 0).toLocaleString()} day-rows · ${(s.activity_daily?.distinct_users ?? 0).toLocaleString()} users · ${s.activity_daily?.distinct_factions ?? 0} factions`
+                ${adminCard("Users", s.users ? `${s.users.active} active / ${s.users.total} total` : NA)}
+                ${adminCard("Factions", s.factions ? `${s.factions.alive} alive / ${s.factions.total} total (${s.factions.ranked} ranked)` : NA)}
+                ${adminCard("Poll Jobs", s.poll_jobs ? `${s.poll_jobs.total} total — ${s.poll_jobs.due_now} due, ${s.poll_jobs.in_flight} in-flight`
+                    + `<br><span style="color:#ef5350">Hot: ${s.poll_jobs.hot}</span> · Warm: ${s.poll_jobs.warm} · <span style="color:#666">Cold: ${s.poll_jobs.cold}</span>` : NA)}
+                ${adminCard("Wars", s.wars ? `${s.wars.active} active / ${s.wars.total} total` : NA)}
+                ${adminCard("Activity", `~${num(s.activity_daily?.total_rows)} day-rows · ${num(s.activity_daily?.distinct_users)} users · ${num(s.activity_daily?.distinct_factions)} factions`
                     + `<br><span style="color:#666">${s.activity_daily?.oldest || "—"} → ${s.activity_daily?.newest || "—"} · ${s.activity_daily?.retention_days ?? "?"}d retention</span>`)}
-                ${adminCard("API Calls", `${s.api_calls.total} total · ${s.api_calls.last_hour} last hour · <span style="color:${s.api_calls.errors > 0 ? '#ef5350' : '#4caf50'}">${s.api_calls.errors} errors</span>`)}
-                ${adminCard("Members Tracked", `${s.faction_members.toLocaleString()} roster entries`)}
+                ${adminCard("API Calls", s.api_calls ? `${num(s.api_calls.total)} total · ${s.api_calls.last_hour} last hour · <span style="color:${s.api_calls.errors > 0 ? '#ef5350' : '#4caf50'}">${s.api_calls.errors} errors</span>`
+                    + `<br><span style="color:#666">${s.api_calls.retention_days ?? "?"}d retention</span>` : NA)}
+                ${adminCard("Members Tracked", s.faction_members != null ? `${num(s.faction_members)} roster entries` : NA)}
                 ${adminCard("Server", `CPU: ${s.server.load_avg.join(" / ")} (${s.server.cpu_count} cores)`
                     + `<br>RAM: ${s.server.mem_used_pct}% used (${s.server.mem_free_mb}MB free / ${s.server.mem_total_mb}MB)`
                     + `<br>Node heap: ${s.server.node_heap_mb}MB · Uptime: ${s.server.uptime_hours}h (process: ${s.server.process_uptime_hours}h)`)}
@@ -2956,8 +2963,8 @@
 
             <h3 style="color:#fff;font-size:15px;margin:16px 0 8px">Factions by Division</h3>
             <div style="display:flex;gap:4px;align-items:flex-end;height:120px;margin-bottom:8px">
-                ${s.factions.by_division.map((d) => {
-                    const maxCnt = Math.max(...s.factions.by_division.map((x) => x.count));
+                ${byDivision.map((d) => {
+                    const maxCnt = Math.max(...byDivision.map((x) => x.count));
                     const h = Math.max((d.count / maxCnt) * 100, 4);
                     const bg = ["#444", "#cd7f32", "#c0c0c0", "#ffd700", "#4fc3f7", "#b388ff"][d.division] || "#666";
                     return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
