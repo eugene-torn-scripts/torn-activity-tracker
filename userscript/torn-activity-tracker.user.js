@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      3.1.0
+// @version      3.2.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "3.1.0";
+    const VERSION = "3.2.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -2945,7 +2945,7 @@
                 ${adminCard("Activity", `~${num(s.activity_daily?.total_rows)} day-rows · ${num(s.activity_daily?.distinct_users)} users · ${num(s.activity_daily?.distinct_factions)} factions`
                     + `<br><span style="color:#666">${s.activity_daily?.oldest || "—"} → ${s.activity_daily?.newest || "—"} · ${s.activity_daily?.retention_days ?? "?"}d retention</span>`)}
                 ${adminCard("API Calls", s.api_calls ? `${num(s.api_calls.total)} total · ${s.api_calls.last_hour} last hour · <span style="color:${s.api_calls.errors > 0 ? '#ef5350' : '#4caf50'}">${s.api_calls.errors} errors</span>`
-                    + `<br><span style="color:#666">${s.api_calls.retention_days ?? "?"}d retention</span>` : NA)}
+                    + `<br><span style="color:#666">${s.api_calls.retention_days ?? "?"}d retention · ${s.api_calls.success_sample_rate > 0 ? `errors + 1-in-${s.api_calls.success_sample_rate} successes` : "errors only"}</span>` : NA)}
                 ${adminCard("Members Tracked", s.faction_members != null ? `${num(s.faction_members)} roster entries` : NA)}
                 ${adminCard("Server", `CPU: ${s.server.load_avg.join(" / ")} (${s.server.cpu_count} cores)`
                     + `<br>RAM: ${s.server.mem_used_pct}% used (${s.server.mem_free_mb}MB free / ${s.server.mem_total_mb}MB)`
