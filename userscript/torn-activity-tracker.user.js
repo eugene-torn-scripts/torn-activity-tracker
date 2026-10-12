@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      3.5.1
+// @version      3.5.2
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "3.5.1";
+    const VERSION = "3.5.2";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -2024,7 +2024,8 @@
         const SCORE_BG = ["#1a1a2e", "#1b3a24", "#1e5128", "#2e7d32", "#43a047", "#66bb6a"];
 
         function scoreOf(cell) {
-            return Math.round((5 * cell.online) / cell.observed);
+            if (!cell.online) return 0;
+            return Math.max(1, Math.round((5 * cell.online) / cell.observed));
         }
 
         function scoreCellHTML(cell) {
@@ -2176,7 +2177,7 @@
                 <div style="${legendNoteStyle}">
                     <b style="color:#ddd">Online score 0–5</b> — how likely the player is online at this hour.
                     It is the share of the last ${days} days on which the player was online in that hour:
-                    <b style="color:#ddd">5</b> = every day, <b style="color:#ddd">0</b> = never, <b style="color:#ddd">-</b> = no data.
+                    <b style="color:#ddd">5</b> = (almost) every day, <b style="color:#ddd">1</b> = at least once, <b style="color:#ddd">0</b> = never, <b style="color:#ddd">-</b> = no data.
                     Hover a cell to see the exact day count.
                     <div class="tat-legend" style="margin:6px 0 0">${boxes}</div>
                 </div>`;
