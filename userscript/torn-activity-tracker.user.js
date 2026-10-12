@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      3.4.0
+// @version      3.5.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "3.4.0";
+    const VERSION = "3.5.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -402,6 +402,7 @@
         style.id = "tat-style";
         style.textContent = `
 /* Overlay & Panel */
+#tat-toast{position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:2147483647;padding:10px 16px;border-radius:6px;font-size:13px;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,.5);transition:opacity .3s;pointer-events:none}
 #tat-overlay{display:none;position:fixed;inset:0;z-index:999998;background:rgba(0,0,0,.7)}
 #tat-panel{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:999999;
   background:#1a1a1a;border:1px solid #444;border-radius:10px;overflow:hidden;resize:both;
@@ -762,7 +763,42 @@
 
     // ── CSV export utility ────────────────────────────────────
 
+    function showToast(message, isError) {
+        document.getElementById("tat-toast")?.remove();
+        const toast = document.createElement("div");
+        toast.id = "tat-toast";
+        toast.style.background = isError ? "#c62828" : "#2e7d32";
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => { toast.style.opacity = "0"; }, 2500);
+        setTimeout(() => toast.remove(), 2900);
+    }
+
+    function copyTextToClipboard(text) {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        let ok = false;
+        try { ok = document.execCommand("copy"); } catch { ok = false; }
+        ta.remove();
+        if (ok) return Promise.resolve();
+        if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+        return Promise.reject(new Error("clipboard unavailable"));
+    }
+
     function downloadCSV(filename, headers, rows) {
+        if (IS_PDA) {
+            const tsvCell = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
+            const tsv = [headers, ...rows].map((r) => r.map(tsvCell).join("\t")).join("\n");
+            copyTextToClipboard(tsv)
+                .then(() => showToast(`Copied ${rows.length} rows to clipboard`))
+                .catch(() => showToast("Could not copy to clipboard", true));
+            return;
+        }
         const escape = (v) => {
             const s = String(v ?? "");
             return s.includes(",") || s.includes('"') || s.includes("\n")
