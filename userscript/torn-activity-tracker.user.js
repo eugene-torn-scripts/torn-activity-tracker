@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      3.3.1
+// @version      3.4.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "3.3.1";
+    const VERSION = "3.4.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -1636,10 +1636,16 @@
         document.getElementById("tat-cmp-days").addEventListener("change", load);
         document.getElementById("tat-export-compare").addEventListener("click", () => {
             if (!compareData) return;
-            const headers = ["faction", "user_id", "name", "position", "hours_online", "hours_idle", "hours_observed", "pct_online"];
-            const rows = [];
-            for (const m of compareData.left) rows.push(["my", m.user_id, m.name, m.position, m.hours_online, m.hours_idle, m.hours_observed, m.pct_online]);
-            for (const m of compareData.right || []) rows.push(["opponent", m.user_id, m.name, m.position, m.hours_online, m.hours_idle, m.hours_observed, m.pct_online]);
+            const headers = ["faction", "user_id", "name", "position", "bs_estimate", "fair_fight", "hours_online", "hours_idle", "hours_observed", "pct_online", "activity_min_per_day", "activity_window_days", "xanax_since_war", "overdoses_since_war"];
+            const toRow = (faction, m) => {
+                const bs = compareData.bs.get(m.user_id);
+                return [faction, m.user_id, m.name, m.position, bs?.bs, bs?.ff, m.hours_online, m.hours_idle, m.hours_observed, m.pct_online,
+                    m.activity_min_per_day, m.activity_window_days, m.xanax_since_war, m.overdoses_since_war];
+            };
+            const rows = [
+                ...compareData.left.map((m) => toRow("my", m)),
+                ...(compareData.right || []).map((m) => toRow("opponent", m)),
+            ];
             downloadCSV("activity-compare.csv", headers, rows);
         });
 
@@ -1713,7 +1719,7 @@
             // dropdown shows what the response was actually computed against.
             if (currentSinceDate == null) currentSinceDate = leftMeta.default_since_date ?? null;
 
-            compareData = { left: leftData, right: rightData };
+            compareData = { left: leftData, right: rightData, bs: new Map() };
             if (exportBtn) exportBtn.disabled = false;
 
             const lOnline = leftData.reduce((s, m) => s + m.hours_online, 0);
@@ -1813,8 +1819,10 @@
                 const allIds = rightData
                     ? [...leftData.map((m) => m.user_id), ...rightData.map((m) => m.user_id)]
                     : leftData.map((m) => m.user_id);
+                const exportData = compareData;
                 fetchBattleStats(allIds).then((bsMap) => {
                     if (bsMap.size === 0) return;
+                    exportData.bs = bsMap;
                     const leftBs = new Map(), rightBs = new Map();
                     for (const m of leftData) { const v = bsMap.get(m.user_id); if (v) leftBs.set(m.user_id, v); }
                     if (rightData) {
@@ -1972,14 +1980,18 @@
 
         const SCORE_BG = ["#1a1a2e", "#1b3a24", "#1e5128", "#2e7d32", "#43a047", "#66bb6a"];
 
+        function scoreOf(cell) {
+            return Math.round((5 * cell.online) / cell.observed);
+        }
+
         function scoreCellHTML(cell) {
             if (!cell) return `<td class="tat-cell" style="background:#111;color:#444">-</td>`;
-            const score = Math.round((5 * cell.online) / cell.observed);
+            const score = scoreOf(cell);
             const fg = score ? "#fff" : "#555";
             return `<td class="tat-cell" style="background:${SCORE_BG[score]};color:${fg}" title="Online ${cell.online} of ${cell.observed} days">${score}</td>`;
         }
 
-        function latestHourCells(uid, isWar) {
+        function latestHours(uid) {
             const nowMs = Date.now();
             const todayStartMs = Math.floor(nowMs / 86_400_000) * 86_400_000;
             const latest = new Array(24).fill(null);
@@ -1989,13 +2001,14 @@
                 if (!latest[h] || latest[h].ms < ms) latest[h] = { row, ms };
             }
             return latest.map((cell, h) => {
+                if (cell) return cell;
                 let hourStartMs = todayStartMs + h * 3600_000;
                 if (hourStartMs > nowMs) hourStartMs -= 86_400_000;
-                return statusCellHTML(cell?.row, isWar(cell ? cell.ms : hourStartMs));
-            }).join("");
+                return { row: null, ms: hourStartMs };
+            });
         }
 
-        function averageHourCells(uid) {
+        function averageHours(uid) {
             const cells = new Array(24).fill(null);
             for (const row of (userHoursCache.get(uid) || [])) {
                 const h = new Date(row.hour).getUTCHours();
@@ -2003,23 +2016,48 @@
                 cell.observed++;
                 if (row.active > 0) cell.online++;
             }
-            return cells.map(scoreCellHTML).join("");
+            return cells;
         }
 
-        function sideRowsHTML(users, color, sideTitle, isWar) {
+        function hourStatus(row) {
+            if (!row) return "";
+            return row.active > 0 ? "ON" : row.idle > 0 ? "idl" : "off";
+        }
+
+        const rowTableExports = {};
+
+        function sideRowsHTML(users, color, sideTitle, isWar, side) {
             if (!users.length) return "";
             const header = sideTitle
                 ? `<h4 style="color:${color};font-size:13px;margin:0 0 8px;font-weight:600">${sideTitle}</h4>`
                 : "";
+            const hourHeaders = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0"));
             let html = `<table class="tat-grid" style="font-size:11px"><thead><tr><th></th>`;
-            for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
+            for (const hh of hourHeaders) html += `<th>${hh}</th>`;
             html += `</tr></thead><tbody>`;
+            const csvRows = [];
             for (const u of users) {
-                const cells = average ? averageHourCells(u.uid) : latestHourCells(u.uid, isWar);
+                let cells;
+                if (average) {
+                    const hours = averageHours(u.uid);
+                    cells = hours.map(scoreCellHTML).join("");
+                    csvRows.push([u.uid, u.name, ...hours.map((c) => (c ? scoreOf(c) : ""))]);
+                } else {
+                    const hours = latestHours(u.uid);
+                    cells = hours.map((c) => statusCellHTML(c.row, isWar(c.ms))).join("");
+                    csvRows.push([u.uid, u.name, ...hours.map((c) => hourStatus(c.row))]);
+                }
                 html += `<tr><td class="tat-day-label" style="color:${color};font-weight:600;text-align:left">${u.name}</td>${cells}</tr>`;
             }
             html += `</tbody></table>`;
-            return `<div style="margin-bottom:16px">${header}<div class="tat-grid-wrap">${html}</div></div>`;
+            const label = side === "left" ? "my" : "opponent";
+            rowTableExports[side] = {
+                filename: `activity-${average ? `avg${days}` : "day1"}-${label}.csv`,
+                headers: ["user_id", "name", ...hourHeaders],
+                rows: csvRows,
+            };
+            const exportBtn = `<button class="tat-btn tat-btn-export" data-tat-row-export="${side}" style="margin-top:6px">Export CSV</button>`;
+            return `<div style="margin-bottom:16px">${header}<div class="tat-grid-wrap">${html}</div>${exportBtn}</div>`;
         }
 
         function userHeatmapHTML(name, color, dataMap, isWar, stats) {
@@ -2111,8 +2149,8 @@
 
         let sidesHTML;
         if (rowMode) {
-            sidesHTML = sideRowsHTML(leftUsers, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft)
-                + sideRowsHTML(rightUsers, "#ef5350", bothSides ? "Opponent" : "", isWarRight);
+            sidesHTML = sideRowsHTML(leftUsers, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft, "left")
+                + sideRowsHTML(rightUsers, "#ef5350", bothSides ? "Opponent" : "", isWarRight, "right");
         } else {
             sidesHTML = sideHTML(leftUsers, leftMaps, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft, leftFactionId)
                 + sideHTML(rightUsers, rightMaps, "#ef5350", bothSides ? "Opponent" : "", isWarRight, rightFactionId);
@@ -2142,6 +2180,12 @@
                 </div>
             </div>
         `;
+        for (const btn of container.querySelectorAll("[data-tat-row-export]")) {
+            btn.addEventListener("click", () => {
+                const exp = rowTableExports[btn.dataset.tatRowExport];
+                downloadCSV(exp.filename, exp.headers, exp.rows);
+            });
+        }
     }
 
     // ── Settings tab ────────────────────────────────────────────
