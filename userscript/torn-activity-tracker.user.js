@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      3.2.0
+// @version      3.3.0
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "3.2.0";
+    const VERSION = "3.3.0";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -1579,6 +1579,10 @@
                     <option value="7" selected>7</option>
                     <option value="14">14</option>
                     <option value="30">30</option>
+                    <option value="avg3">Average for 3</option>
+                    <option value="avg7">Average for 7</option>
+                    <option value="avg14">Average for 14</option>
+                    <option value="avg30">Average for 30</option>
                 </select>
                 <button class="tat-btn tat-btn-export" id="tat-export-compare" style="margin-left:auto" disabled>Export CSV</button>
             </div>
@@ -1621,8 +1625,10 @@
             const left = Number(document.getElementById("tat-cmp-left").value);
             const rightRaw = Number(document.getElementById("tat-cmp-right").value);
             const right = rightRaw || null;
-            const days = Number(document.getElementById("tat-cmp-days").value);
-            fetchAndRenderCompare(left, right, days);
+            const daysRaw = document.getElementById("tat-cmp-days").value;
+            const average = daysRaw.startsWith("avg");
+            const days = Number(average ? daysRaw.slice(3) : daysRaw);
+            fetchAndRenderCompare(left, right, days, average);
         };
 
         document.getElementById("tat-cmp-left").addEventListener("change", load);
@@ -1637,7 +1643,7 @@
             downloadCSV("activity-compare.csv", headers, rows);
         });
 
-        async function fetchAndRenderCompare(leftId, rightId, days) {
+        async function fetchAndRenderCompare(leftId, rightId, days, average) {
             const container = document.getElementById("tat-compare-container");
             const exportBtn = document.getElementById("tat-export-compare");
 
@@ -1790,7 +1796,7 @@
             if (sinceSel) {
                 sinceSel.addEventListener("change", () => {
                     currentSinceDate = sinceSel.value;
-                    fetchAndRenderCompare(leftId, rightId, days);
+                    fetchAndRenderCompare(leftId, rightId, days, average);
                 });
             }
 
@@ -1838,12 +1844,12 @@
                     selSet.add(uid);
                 }
                 if (tablesContainer._render) tablesContainer._render();
-                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, leftWars, rightWars, leftId, rightId);
+                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, average, leftWars, rightWars, leftId, rightId);
             });
 
             // If selections survived a reload (e.g. days filter changed), refresh heatmaps.
             if (selectedLeft.size || selectedRight.size) {
-                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, leftWars, rightWars, leftId, rightId);
+                loadUserCompare([...selectedLeft.values()], [...selectedRight.values()], days, average, leftWars, rightWars, leftId, rightId);
             }
         }
 
@@ -1861,7 +1867,7 @@
         loadUserCompareToken++;
     }
 
-    async function loadUserCompare(leftUsers, rightUsers, days, leftWars, rightWars, leftFactionId, rightFactionId) {
+    async function loadUserCompare(leftUsers, rightUsers, days, average, leftWars, rightWars, leftFactionId, rightFactionId) {
         const container = document.getElementById("tat-user-compare");
         if (!leftUsers.length && !rightUsers.length) {
             container.style.display = "none";
@@ -1871,13 +1877,14 @@
         container.style.display = "block";
 
         const myToken = ++loadUserCompareToken;
+        const rowMode = average || days === 1;
         const tagged = [
             ...leftUsers.map((u) => ({ ...u, factionId: leftFactionId, side: "left" })),
             ...rightUsers.map((u) => ({ ...u, factionId: rightFactionId, side: "right" })),
         ];
         const missingHours = tagged.filter((u) => !userHoursCache.has(u.uid));
         const warStatsKey = (uid, fid) => `${uid}:${fid}:${days}`;
-        const missingStats = tagged.filter((u) => u.factionId && !userWarStatsCache.has(warStatsKey(u.uid, u.factionId)));
+        const missingStats = tagged.filter((u) => !rowMode && u.factionId && !userWarStatsCache.has(warStatsKey(u.uid, u.factionId)));
 
         // Only show a loading placeholder on the first paint (empty container).
         // Subsequent clicks keep the prior heatmaps visible while new data fetches —
@@ -1941,6 +1948,80 @@
             return h > 0 ? `${h}h ${r}m` : `${r}m`;
         }
 
+        function statusCellHTML(row, war) {
+            if (!row) {
+                const bg = war ? "#2e1f1a" : "#111";
+                return `<td class="tat-cell" style="background:${bg};color:#444">-</td>`;
+            }
+            const status = row.active > 0 ? "ON" : row.idle > 0 ? "idl" : "off";
+            // Swap the green/brown/dark-blue ramp for the amber palette
+            // during war hours — matches the Hour Grid tab's treatment.
+            const bg = row.active > 0
+                ? (war ? "#bf6a0f" : "#2e7d32")
+                : row.idle > 0
+                    ? (war ? "#5a3416" : "#5d4037")
+                    : (war ? "#2e1f1a" : "#1a1a2e");
+            const fg = row.active > 0
+                ? (war ? "#ffcc80" : "#69f0ae")
+                : row.idle > 0
+                    ? (war ? "#ed8c12" : "#ffab91")
+                    : (war ? "#5a3416" : "#555");
+            const title = war ? `${status} (war)` : status;
+            return `<td class="tat-cell" style="background:${bg};color:${fg}" title="${title}">${status}</td>`;
+        }
+
+        const SCORE_BG = ["#1a1a2e", "#1b3a24", "#1e5128", "#2e7d32", "#43a047", "#66bb6a"];
+
+        function scoreCellHTML(cell) {
+            if (!cell) return `<td class="tat-cell" style="background:#111;color:#444">-</td>`;
+            const score = Math.round((5 * cell.online) / cell.observed);
+            const fg = score ? "#fff" : "#555";
+            return `<td class="tat-cell" style="background:${SCORE_BG[score]};color:${fg}" title="Online ${cell.online} of ${cell.observed} days">${score}</td>`;
+        }
+
+        function latestHourCells(uid, isWar) {
+            const nowMs = Date.now();
+            const todayStartMs = Math.floor(nowMs / 86_400_000) * 86_400_000;
+            const latest = new Array(24).fill(null);
+            for (const row of (userHoursCache.get(uid) || [])) {
+                const ms = new Date(row.hour).getTime();
+                const h = new Date(ms).getUTCHours();
+                if (!latest[h] || latest[h].ms < ms) latest[h] = { row, ms };
+            }
+            return latest.map((cell, h) => {
+                let hourStartMs = todayStartMs + h * 3600_000;
+                if (hourStartMs > nowMs) hourStartMs -= 86_400_000;
+                return statusCellHTML(cell?.row, isWar(cell ? cell.ms : hourStartMs));
+            }).join("");
+        }
+
+        function averageHourCells(uid) {
+            const cells = new Array(24).fill(null);
+            for (const row of (userHoursCache.get(uid) || [])) {
+                const h = new Date(row.hour).getUTCHours();
+                const cell = cells[h] || (cells[h] = { online: 0, observed: 0 });
+                cell.observed++;
+                if (row.active > 0) cell.online++;
+            }
+            return cells.map(scoreCellHTML).join("");
+        }
+
+        function sideRowsHTML(users, color, sideTitle, isWar) {
+            if (!users.length) return "";
+            const header = sideTitle
+                ? `<h4 style="color:${color};font-size:13px;margin:0 0 8px;font-weight:600">${sideTitle}</h4>`
+                : "";
+            let html = `<table class="tat-grid" style="font-size:11px"><thead><tr><th></th>`;
+            for (let h = 0; h < 24; h++) html += `<th>${String(h).padStart(2, "0")}</th>`;
+            html += `</tr></thead><tbody>`;
+            for (const u of users) {
+                const cells = average ? averageHourCells(u.uid) : latestHourCells(u.uid, isWar);
+                html += `<tr><td class="tat-day-label" style="color:${color};font-weight:600;text-align:left">${u.name}</td>${cells}</tr>`;
+            }
+            html += `</tbody></table>`;
+            return `<div style="margin-bottom:16px">${header}<div class="tat-grid-wrap">${html}</div></div>`;
+        }
+
         function userHeatmapHTML(name, color, dataMap, isWar, stats) {
             // stats = BE /user-war-stats payload: { war_total_min, metric_simple_min,
             // metric_estimated_min, has_stats_data, war_days_count }. Render only if
@@ -1973,28 +2054,7 @@
                 const hours = dataMap.get(dateKey) || new Array(24).fill(null);
                 const dayStartMs = new Date(dateKey + "T00:00:00Z").getTime();
                 for (let h = 0; h < 24; h++) {
-                    const row = hours[h];
-                    const war = isWar(dayStartMs + h * 3600_000);
-                    if (!row) {
-                        const bg = war ? "#2e1f1a" : "#111";
-                        html += `<td class="tat-cell" style="background:${bg};color:#444">-</td>`;
-                    } else {
-                        const status = row.active > 0 ? "ON" : row.idle > 0 ? "idl" : "off";
-                        // Swap the green/brown/dark-blue ramp for the amber palette
-                        // during war hours — matches the Hour Grid tab's treatment.
-                        const bg = row.active > 0
-                            ? (war ? "#bf6a0f" : "#2e7d32")
-                            : row.idle > 0
-                                ? (war ? "#5a3416" : "#5d4037")
-                                : (war ? "#2e1f1a" : "#1a1a2e");
-                        const fg = row.active > 0
-                            ? (war ? "#ffcc80" : "#69f0ae")
-                            : row.idle > 0
-                                ? (war ? "#ed8c12" : "#ffab91")
-                                : (war ? "#5a3416" : "#555");
-                        const title = war ? `${status} (war)` : status;
-                        html += `<td class="tat-cell" style="background:${bg};color:${fg}" title="${title}">${status}</td>`;
-                    }
+                    html += statusCellHTML(hours[h], isWar(dayStartMs + h * 3600_000));
                 }
                 html += `</tr>`;
             }
@@ -2023,12 +2083,42 @@
         else if (total === 1) title = `Activity: ${(leftUsers[0] || rightUsers[0]).name}`;
         else title = `Activity: ${total} users`;
 
-        container.innerHTML = `
-            <div style="margin-top:16px;padding-top:16px;border-top:1px solid #333">
-                <h3 style="color:#fff;font-size:15px;margin:0 0 12px">${title}</h3>
-                ${sideHTML(leftUsers, leftMaps, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft, leftFactionId)}
-                ${sideHTML(rightUsers, rightMaps, "#ef5350", bothSides ? "Opponent" : "", isWarRight, rightFactionId)}
-                <div class="tat-legend" style="margin-top:8px">
+        const legendNoteStyle = "color:#888;font-size:11px;line-height:1.6;margin:0 0 12px;padding:8px 12px;background:#1f1f1f;border-left:3px solid #444;border-radius:3px";
+        const hasWarStats = !rowMode && tagged.some((u) => {
+            const stats = u.factionId ? userWarStatsCache.get(warStatsKey(u.uid, u.factionId)) : null;
+            return stats && stats.war_total_min > 0;
+        });
+        let topLegendHTML = "";
+        if (average) {
+            const boxes = SCORE_BG.map((bg, i) => `<span class="tat-legend-box" style="background:${bg}"></span> ${i}`).join(" ");
+            topLegendHTML = `
+                <div style="${legendNoteStyle}">
+                    <b style="color:#ddd">Online score 0–5</b> — how likely the player is online at this hour.
+                    It is the share of the last ${days} days on which the player was online in that hour:
+                    <b style="color:#ddd">5</b> = every day, <b style="color:#ddd">0</b> = never, <b style="color:#ddd">-</b> = no data.
+                    Hover a cell to see the exact day count.
+                    <div class="tat-legend" style="margin:6px 0 0">${boxes}</div>
+                </div>`;
+        } else if (hasWarStats) {
+            topLegendHTML = `
+                <div style="${legendNoteStyle}">
+                    <b style="color:#ddd">War total</b> — total length of the faction's wars in the selected days (same for every member).<br>
+                    <b style="color:#ddd">War-day activity</b> — the player's Torn "time played" on UTC days touched by a war. It counts the whole day, not only war hours.<br>
+                    <b style="color:#ddd">~ (exp.)</b> — experimental estimate of time played during war hours only: war-day activity × the share of the day's online minutes that fell inside the war.<br>
+                    <b style="color:#ddd">activity: —</b> — no "time played" history for this window (wars before 2026-05-10).
+                </div>`;
+        }
+
+        let sidesHTML;
+        if (rowMode) {
+            sidesHTML = sideRowsHTML(leftUsers, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft)
+                + sideRowsHTML(rightUsers, "#ef5350", bothSides ? "Opponent" : "", isWarRight);
+        } else {
+            sidesHTML = sideHTML(leftUsers, leftMaps, "#4fc3f7", bothSides ? "My faction" : "", isWarLeft, leftFactionId)
+                + sideHTML(rightUsers, rightMaps, "#ef5350", bothSides ? "Opponent" : "", isWarRight, rightFactionId);
+        }
+
+        const statusLegendHTML = average ? "" : `
                     <span>Peace:</span>
                     <span class="tat-legend-box" style="background:#2e7d32"></span> Online
                     <span class="tat-legend-box" style="background:#5d4037"></span> Idle
@@ -2036,8 +2126,19 @@
                     <span style="margin-left:12px">War:</span>
                     <span class="tat-legend-box" style="background:#bf6a0f"></span> Online
                     <span class="tat-legend-box" style="background:#5a3416"></span> Idle
-                    <span class="tat-legend-box" style="background:#2e1f1a"></span> Offline
-                    <span style="margin-left:12px;color:#666">All times TCT (UTC)</span>
+                    <span class="tat-legend-box" style="background:#2e1f1a"></span> Offline`;
+        const tzNote = days === 1 && !average
+            ? "All times TCT (UTC) · each hour shows its most recent value"
+            : "All times TCT (UTC)";
+
+        container.innerHTML = `
+            <div style="margin-top:16px;padding-top:16px;border-top:1px solid #333">
+                <h3 style="color:#fff;font-size:15px;margin:0 0 12px">${title}</h3>
+                ${topLegendHTML}
+                ${sidesHTML}
+                <div class="tat-legend" style="margin-top:8px">
+                    ${statusLegendHTML}
+                    <span style="margin-left:${average ? 0 : 12}px;color:#666">${tzNote}</span>
                 </div>
             </div>
         `;
