@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      3.5.0
+// @version      3.5.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "3.5.0";
+    const VERSION = "3.5.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -1577,6 +1577,10 @@
             // Sort click — any header sorts both sides
             container.querySelectorAll("th[data-col]").forEach((th) => {
                 th.addEventListener("click", () => {
+                    if (lastPointerDownTarget && !th.contains(lastPointerDownTarget)) {
+                        lastPointerDownTarget.closest?.(".tat-cmp-name")?.click();
+                        return;
+                    }
                     const col = th.dataset.col;
                     if (sortCol === col) sortDir *= -1;
                     else { sortCol = col; sortDir = col === "name" ? 1 : -1; }
@@ -1588,6 +1592,9 @@
 
             renderColToggle();
         }
+
+        let lastPointerDownTarget = null;
+        container.addEventListener("pointerdown", (e) => { lastPointerDownTarget = e.target; }, true);
 
         container._render = render;
         container._setBS = (lbs, rbs) => { leftBsMap = lbs; rightBsMap = rbs; render(); };
