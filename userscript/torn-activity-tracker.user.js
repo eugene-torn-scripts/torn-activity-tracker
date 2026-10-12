@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Activity Tracker
 // @namespace    https://github.com/eugene-torn-scripts/torn-activity-tracker
-// @version      3.3.0
+// @version      3.3.1
 // @description  Faction member activity heatmap for ranked war scouting. Compares your faction's activity history vs the opponent.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -40,7 +40,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "3.3.0";
+    const VERSION = "3.3.1";
     const BACKEND_BASE = GM_getValue("backend_base", "https://torn-tat.duckdns.org");
 
     // Torn PDA exposes PDA_httpGet as a global; its presence is the canonical
@@ -1639,7 +1639,7 @@
             const headers = ["faction", "user_id", "name", "position", "hours_online", "hours_idle", "hours_observed", "pct_online"];
             const rows = [];
             for (const m of compareData.left) rows.push(["my", m.user_id, m.name, m.position, m.hours_online, m.hours_idle, m.hours_observed, m.pct_online]);
-            for (const m of compareData.right) rows.push(["opponent", m.user_id, m.name, m.position, m.hours_online, m.hours_idle, m.hours_observed, m.pct_online]);
+            for (const m of compareData.right || []) rows.push(["opponent", m.user_id, m.name, m.position, m.hours_online, m.hours_idle, m.hours_observed, m.pct_online]);
             downloadCSV("activity-compare.csv", headers, rows);
         });
 
